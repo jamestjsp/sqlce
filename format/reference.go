@@ -127,31 +127,6 @@ func applyReferenceSchema(colMap map[struct{ table, column string }]*ColumnDef, 
 	}
 }
 
-// referenceNullBmpExtra stores the number of EXTRA null bitmap bytes beyond the
-// first header byte for each table. Empirically determined from Depropanizer.sdf
-// by matching reference GUIDs to page data. 0=header only, 1=header+1, 2=header+2.
-var referenceNullBmpExtra = map[string]int{
-	"BlcModel": 1, "BlockVariableReferences": 0, "Blocks": 2,
-	"CodeBlock": 0, "CodeBlockSource": 1, "ControllerSubSystem": 1,
-	"ControllerSubSystemVariableReferences": 0, "ControllerVariableReference": 1,
-	"Controllers": 2, "CustomCode": 0, "CustomProcessor": 0,
-	"CVRole": 1, "DataArrayTypes": 0, "DataLinks": 0, "DesigntimeParameters": 0,
-	"DigitalMapTranslations": 0, "DigitalMaps": 0, "DigitalStates": 0,
-	"EconomicFunction": 1, "EstimatorVariableSet": 2, "EstimatorVariableSetMember": 1,
-	"Estimators": 1, "ExecutionSequence": 1, "ExternalRuntimeDataSource": 1,
-	"FormulaInputProcessVariableReference": 1, "FormulaInputUserParameterReference": 1,
-	"IOItems": 2, "ItemInformation": 1, "ItemSequence": 0,
-	"Loop": 2, "ModelLayerBlocks": 0, "ModelLayers": 1,
-	"ModelVariableSet": 1, "ModelVariableSetMember": 0, "Models": 1,
-	"ParametricElements": 3, "ProcessVariables": 2, "ProcessorCustomIoItem": 0, "ProcessorInExecutionSequence": 0,
-	"Processors": 0, "RTOControllers": 0, "RTOInterface": 0,
-	"RTOVariableRoles": 0, "Relation": 0, "RelationBlocks": 1,
-	"RelationVariableReference": 0, "ScenarioStep": 1, "SimulationCase": 1,
-	"SimulationCaseSetup": 0, "SimulationReferenceData": 2, "SisoElements": 0,
-	"SisoRelation": 1, "UserParameter": 1, "VariableReference": 0,
-	"VariableRole": 0, "VariableTransform": 0, "WatchDogMVAssignment": 0,
-}
-
 var referenceSchema = map[[2]string]refColumn{
 	{"AutoStepDependency", "AutoStepDependencyIdentifier"}: {"uniqueidentifier", 1, 0},
 	{"AutoStepDependency", "ControllerIdentifier"}: {"uniqueidentifier", 2, 0},
