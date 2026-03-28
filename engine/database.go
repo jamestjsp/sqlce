@@ -18,6 +18,7 @@ type Database struct {
 	catalog    *format.Catalog
 	totalPages int
 	objMapping map[string][]uint16 // table name → objectIDs (best effort)
+	pageIndex  map[uint16][]int    // objectID → file page numbers (Leaf/Data only)
 	closed     bool
 }
 
@@ -60,6 +61,12 @@ func openFromFile(f *os.File) (*Database, error) {
 		return nil, fmt.Errorf("reading catalog: %w", err)
 	}
 
+	pageIndex, err := buildPageIndex(pr, totalPages)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("building page index: %w", err)
+	}
+
 	db := &Database{
 		file:       f,
 		header:     h,
@@ -67,6 +74,7 @@ func openFromFile(f *os.File) (*Database, error) {
 		catalog:    catalog,
 		totalPages: totalPages,
 		objMapping: catalog.ObjectMap,
+		pageIndex:  pageIndex,
 	}
 
 	return db, nil
@@ -82,6 +90,41 @@ func (db *Database) Close() error {
 	}
 	db.closed = true
 	return db.file.Close()
+}
+
+func buildPageIndex(pr *format.PageReader, totalPages int) (map[uint16][]int, error) {
+	idx := make(map[uint16][]int)
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			return nil, err
+		}
+		pt := format.ClassifyPage(page)
+		if pt != format.PageLeaf && pt != format.PageData {
+			continue
+		}
+		objID := format.PageObjectID(page)
+		idx[objID] = append(idx[objID], pg)
+	}
+	return idx, nil
+}
+
+func (db *Database) PagesForObjectIDs(objectIDs []uint16) []int {
+	if db.pageIndex == nil {
+		return nil
+	}
+	seen := make(map[int]struct{})
+	var pages []int
+	for _, id := range objectIDs {
+		for _, pg := range db.pageIndex[id] {
+			if _, ok := seen[pg]; !ok {
+				seen[pg] = struct{}{}
+				pages = append(pages, pg)
+			}
+		}
+	}
+	sort.Ints(pages)
+	return pages
 }
 
 // Tables returns the names of all tables in the database, sorted alphabetically.
@@ -200,12 +243,18 @@ func (t *Table) Scan() (*ScanResult, error) {
 	}
 
 	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, t.objIDs)
+	if pages := t.db.PagesForObjectIDs(t.objIDs); len(pages) > 0 {
+		scanner.SetPages(pages)
+	}
 	return scanner.Scan()
 }
 
 // ScanWithObjectID reads all rows using the specified objectID.
 func (t *Table) ScanWithObjectID(objectID uint16) (*ScanResult, error) {
 	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, []uint16{objectID})
+	if pages := t.db.PagesForObjectIDs([]uint16{objectID}); len(pages) > 0 {
+		scanner.SetPages(pages)
+	}
 	return scanner.Scan()
 }
 
