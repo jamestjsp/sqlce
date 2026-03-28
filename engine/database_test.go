@@ -3,7 +3,7 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/josephjohnjj/sqlce/engine"
+	"github.com/jamestjat/sqlce/engine"
 )
 
 func TestDatabaseOpen(t *testing.T) {

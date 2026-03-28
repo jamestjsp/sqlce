@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josephjohnjj/sqlce/format"
+	"github.com/jamestjat/sqlce/format"
 
 	_ "modernc.org/sqlite"
 )

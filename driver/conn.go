@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 
-	"github.com/josephjohnjj/sqlce/engine"
+	"github.com/jamestjat/sqlce/engine"
 )
 
 // connector implements driver.Connector.

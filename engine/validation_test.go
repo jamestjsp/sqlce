@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/josephjohnjj/sqlce/engine"
-	"github.com/josephjohnjj/sqlce/format"
+	"github.com/jamestjat/sqlce/engine"
+	"github.com/jamestjat/sqlce/format"
 
 	_ "modernc.org/sqlite"
 )

@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/josephjohnjj/sqlce/engine"
+	"github.com/jamestjat/sqlce/engine"
 )
 
 // stmt implements driver.Stmt.

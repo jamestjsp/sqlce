@@ -14,6 +14,7 @@ A pure Go library for reading SQL Server Compact Edition (SQL CE) `.sdf` databas
 
 ```bash
 go get github.com/josephjohnjj/sqlce
+
 ```
 
 ## Quick Start

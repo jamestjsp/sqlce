@@ -3,7 +3,7 @@ package engine
 import (
 	"reflect"
 
-	"github.com/josephjohnjj/sqlce/format"
+	"github.com/jamestjat/sqlce/format"
 )
 
 // Column provides schema information about a single table column.

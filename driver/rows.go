@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/josephjohnjj/sqlce/engine"
+	"github.com/jamestjat/sqlce/engine"
 )
 
 // rows implements driver.Rows.

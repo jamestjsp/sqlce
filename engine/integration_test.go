@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/josephjohnjj/sqlce/engine"
+	"github.com/jamestjat/sqlce/engine"
 
-	_ "github.com/josephjohnjj/sqlce/driver"
+	_ "github.com/jamestjat/sqlce/driver"
 	_ "modernc.org/sqlite"
 )
 
