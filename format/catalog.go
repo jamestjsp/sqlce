@@ -143,7 +143,7 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		sort.Slice(cols, func(i, j int) bool {
 			return cols[i].Ordinal < cols[j].Ordinal
 		})
-		bmpExtra := referenceNullBmpExtra[name] // 0 if not in reference
+		bmpExtra := computeNullBmpExtra(cols)
 		tables = append(tables, TableDef{Name: name, Columns: cols, NullBmpExtra: bmpExtra})
 	}
 	sort.Slice(tables, func(i, j int) bool {
@@ -151,6 +151,26 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 	})
 
 	return &Catalog{Tables: tables, ObjectMap: objectMap}, nil
+}
+
+// computeNullBmpExtra calculates the extra null bitmap bytes from column definitions.
+// Bitmap layout: ceil(colCount/8) null-flag bytes + ceil(numBitCols/8) bit-value bytes.
+// The first byte is always present (header), so extra = total - 1.
+func computeNullBmpExtra(cols []ColumnDef) int {
+	numBits := 0
+	for _, c := range cols {
+		if c.TypeID == TypeBit {
+			numBits++
+		}
+	}
+	total := (len(cols) + 7) / 8
+	if numBits > 0 {
+		total += (numBits + 7) / 8
+	}
+	if total < 1 {
+		return 0
+	}
+	return total - 1
 }
 
 // extractOverflowRecords collects name pairs at the start of B-tree leaf pages
