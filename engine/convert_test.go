@@ -199,3 +199,95 @@ func TestConvertValueBinary(t *testing.T) {
 		t.Error("returned slice is not a copy")
 	}
 }
+
+func TestConvertValueNumeric(t *testing.T) {
+	data := make([]byte, 19)
+	data[0] = 18 // precision
+	data[1] = 2  // scale
+	data[2] = 1  // sign (positive)
+	binary.LittleEndian.PutUint64(data[3:11], 12345)
+	// bytes 11-18 are zero (upper 8 bytes of uint128)
+
+	got, err := ConvertValue(data, 0x6C)
+	if err != nil {
+		t.Fatalf("ConvertValue numeric: %v", err)
+	}
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", got)
+	}
+	if s != "123.45" {
+		t.Errorf("got %q, want %q", s, "123.45")
+	}
+}
+
+func TestConvertValueNumericNegative(t *testing.T) {
+	data := make([]byte, 19)
+	data[0] = 18 // precision
+	data[1] = 4  // scale
+	data[2] = 0  // sign (negative)
+	binary.LittleEndian.PutUint64(data[3:11], 999999)
+
+	got, err := ConvertValue(data, 0x6C)
+	if err != nil {
+		t.Fatalf("ConvertValue numeric: %v", err)
+	}
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", got)
+	}
+	if s != "-99.9999" {
+		t.Errorf("got %q, want %q", s, "-99.9999")
+	}
+}
+
+func TestConvertValueNTextLOB(t *testing.T) {
+	data := make([]byte, 16)
+	data[0] = 0xAA
+	data[15] = 0xBB
+
+	got, err := ConvertValue(data, 0x64)
+	if err != nil {
+		t.Fatalf("ConvertValue ntext: %v", err)
+	}
+	b, ok := got.([]byte)
+	if !ok {
+		t.Fatalf("expected []byte, got %T", got)
+	}
+	if len(b) != 16 || b[0] != 0xAA || b[15] != 0xBB {
+		t.Errorf("unexpected ntext bytes: %x", b)
+	}
+}
+
+func TestConvertValueNChar(t *testing.T) {
+	data := []byte{0x41, 0x00, 0x42, 0x00, 0x43, 0x00}
+	got, err := ConvertValue(data, 0x1E)
+	if err != nil {
+		t.Fatalf("ConvertValue nchar: %v", err)
+	}
+	if got != "ABC" {
+		t.Errorf("got %q, want %q", got, "ABC")
+	}
+}
+
+func TestIsUTF16LE(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"utf16le", []byte{0x48, 0x00, 0x65, 0x00, 0x6C, 0x00}, true},
+		{"ascii", []byte("Hello"), false},
+		{"empty", []byte{}, false},
+		{"single-byte", []byte{0x41}, false},
+		{"odd-length", []byte{0x41, 0x00, 0x42}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isUTF16LE(tc.data)
+			if got != tc.want {
+				t.Errorf("isUTF16LE(%x) = %v, want %v", tc.data, got, tc.want)
+			}
+		})
+	}
+}

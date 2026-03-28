@@ -149,6 +149,56 @@ func TestIntegration_DatabaseSQL(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_ControlLayerQuery(t *testing.T) {
+	sdfDB, err := engine.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatalf("Open SDF: %v", err)
+	}
+	defer sdfDB.Close()
+
+	sqliteRef, err := sql.Open("sqlite", "../data/Depropanizer.db")
+	if err != nil {
+		t.Fatalf("Open SQLite ref: %v", err)
+	}
+	defer sqliteRef.Close()
+
+	requiredTables := []string{
+		"Relation", "ItemInformation", "RelationBlocks", "Blocks",
+		"ModelLayerBlocks", "ModelLayers", "SisoRelation", "SisoElements",
+		"ParametricElements", "ProcessVariables", "ControllerVariableReference",
+		"VariableRole", "BlcModel", "Loop", "CVRole", "EconomicFunction",
+		"VariableTransform", "Models", "ExecutionSequence", "UserParameter",
+	}
+
+	matched := 0
+	partial := 0
+	for _, name := range requiredTables {
+		tbl, err := sdfDB.Table(name)
+		if err != nil {
+			t.Errorf("missing table: %s", name)
+			continue
+		}
+		result, err := tbl.Scan()
+		if err != nil {
+			t.Errorf("%s: scan error: %v", name, err)
+			continue
+		}
+
+		var expected int
+		sqliteRef.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, name)).Scan(&expected)
+
+		if len(result.Rows) == expected {
+			matched++
+			t.Logf("  %s: %d rows OK", name, len(result.Rows))
+		} else {
+			partial++
+			pct := float64(len(result.Rows)) * 100 / float64(expected)
+			t.Logf("  %s: %d/%d rows (%.0f%%)", name, len(result.Rows), expected, pct)
+		}
+	}
+	t.Logf("\nControl layer: %d/%d tables fully matched, %d partial", matched, len(requiredTables), partial)
+}
+
 // TestIntegration_CompareWithSQLite compares mapped tables against SQLite reference.
 func TestIntegration_CompareWithSQLite(t *testing.T) {
 	// Open SDF

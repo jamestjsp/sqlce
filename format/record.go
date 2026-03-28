@@ -5,27 +5,22 @@ import (
 	"fmt"
 )
 
-// Record represents a single parsed row from a Leaf page.
 type Record struct {
-	// Values contains the column values in schema order.
-	// Variable-length string columns are returned as Go strings (ASCII decoded).
-	// Fixed-size columns are returned as raw byte slices for later conversion.
-	// Null columns are nil.
 	Values [][]byte
 }
 
-// PageRecords holds all current records parsed from a single Leaf page.
 type PageRecords struct {
 	ObjectID    uint16
 	ColumnCount int
 	Records     []Record
 }
 
-// ParsePageRecords extracts row records from a Leaf (0x40) page.
-// The columns slice must describe the table's columns in schema order.
-// Returns nil if the page contains no parseable records.
-func ParsePageRecords(page []byte, columns []ColumnDef) (*PageRecords, error) {
-	if len(page) < 32 || ClassifyPage(page) != PageLeaf {
+func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*PageRecords, error) {
+	if len(page) < 32 {
+		return nil, nil
+	}
+	pt := ClassifyPage(page)
+	if pt != PageLeaf && pt != PageData {
 		return nil, nil
 	}
 
@@ -37,16 +32,20 @@ func ParsePageRecords(page []byte, columns []ColumnDef) (*PageRecords, error) {
 
 	colCount := int(binary.LittleEndian.Uint16(page[0x1C:]))
 	if colCount == 0 || colCount > 500 {
+		colCount = len(columns)
+	}
+	if colCount == 0 {
 		return nil, nil
 	}
 
-	// Separate columns into fixed and variable by physical layout order:
-	// SQL CE stores fixed-size columns first, then variable-size columns.
 	var fixedCols []colLayout
 	var varCols []colLayout
+	var bitCols []colLayout
 	for i, c := range columns {
 		ti := LookupType(c.TypeID)
-		if ti.IsVariable {
+		if c.TypeID == TypeBit {
+			bitCols = append(bitCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
+		} else if ti.IsVariable {
 			varCols = append(varCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
 		} else {
 			fixedCols = append(fixedCols, colLayout{schemaIdx: i, size: ti.FixedSize, typeID: c.TypeID})
@@ -58,17 +57,35 @@ func ParsePageRecords(page []byte, columns []ColumnDef) (*PageRecords, error) {
 		ColumnCount: colCount,
 	}
 
-	offset := 0x18 // records start after 24-byte page header
-	for rec := 0; rec < recordCount && offset < len(page)-16; rec++ {
-		r, nextOff, err := parseOneRecord(page, offset, fixedCols, varCols, len(columns))
-		if err != nil {
-			// Skip malformed record, try to continue
+	bmpExtra := 0
+	if len(nullBmpExtra) > 0 {
+		bmpExtra = nullBmpExtra[0]
+	}
+
+	// Find record starts by scanning for [00000000][colCount LE32] pattern.
+	ccBytes := [4]byte{byte(colCount), byte(colCount >> 8), byte(colCount >> 16), byte(colCount >> 24)}
+	var recOffsets []int
+	for i := 0x18; i < len(page)-8 && len(recOffsets) < recordCount; i++ {
+		if page[i] == 0 && page[i+1] == 0 && page[i+2] == 0 && page[i+3] == 0 &&
+			page[i+4] == ccBytes[0] && page[i+5] == ccBytes[1] && page[i+6] == ccBytes[2] && page[i+7] == ccBytes[3] {
+			recOffsets = append(recOffsets, i)
+		}
+	}
+	if len(recOffsets) == 0 {
+		recOffsets = []int{0x18}
+	}
+
+	for _, offset := range recOffsets {
+		if offset+9 > len(page) {
 			break
+		}
+		r, _, err := parseOneRecord(page, offset, fixedCols, varCols, bitCols, len(columns), bmpExtra)
+		if err != nil {
+			continue
 		}
 		if r != nil {
 			pr.Records = append(pr.Records, *r)
 		}
-		offset = nextOff
 	}
 
 	return pr, nil
@@ -76,41 +93,44 @@ func ParsePageRecords(page []byte, columns []ColumnDef) (*PageRecords, error) {
 
 type colLayout struct {
 	schemaIdx int
-	size      int    // 0 for variable
-	typeID    uint16 // SQL CE type ID
+	size      int
+	typeID    uint16
 }
 
-func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, totalCols int) (*Record, int, error) {
-	if offset+8 >= len(page) {
+func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLayout, totalCols int, nullBmpExtra int) (*Record, int, error) {
+	if offset+9 > len(page) {
 		return nil, len(page), fmt.Errorf("offset %d past page end", offset)
 	}
 
-	// Skip 4-byte status prefix
-	offset += 4
+	offset += 4 // status
 
-	// Read 4-byte column count
-	if offset+4 > len(page) {
-		return nil, len(page), fmt.Errorf("no column count at %d", offset)
-	}
-	_ = int(binary.LittleEndian.Uint32(page[offset:]))
-	offset += 4
+	_ = binary.LittleEndian.Uint32(page[offset:])
+	offset += 4 // colCount
 
-	// Read 1-byte record header
-	if offset >= len(page) {
-		return nil, len(page), fmt.Errorf("no header at %d", offset)
+	// Bitmap layout: [null flags: ceil(colCount/8) bytes][bit values: ceil(numBitCols/8) bytes]
+	bitmapSize := 1 + nullBmpExtra
+	var bitmapBytes []byte
+	if offset+bitmapSize <= len(page) {
+		bitmapBytes = make([]byte, bitmapSize)
+		copy(bitmapBytes, page[offset:offset+bitmapSize])
 	}
-	header := page[offset]
-	offset++
-
-	// Null bitmap: present for non-0xF0 headers. Size = 1 byte.
-	if header != 0xF0 && offset < len(page) {
-		_ = page[offset] // null bitmap byte
-		offset++
-	}
+	offset += bitmapSize
 
 	values := make([][]byte, totalCols)
 
-	// Read fixed-size columns
+	// Extract bit column values from the bit-value section of the bitmap
+	if len(bitCols) > 0 && len(bitmapBytes) > 0 {
+		nullFlagBytes := (totalCols + 7) / 8
+		for i, bc := range bitCols {
+			byteIdx := nullFlagBytes + i/8
+			bitIdx := uint(i % 8)
+			if byteIdx < len(bitmapBytes) {
+				val := (bitmapBytes[byteIdx] >> bitIdx) & 1
+				values[bc.schemaIdx] = []byte{val}
+			}
+		}
+	}
+
 	fixedDataSize := 0
 	for _, fc := range fixedCols {
 		fixedDataSize += fc.size
@@ -126,10 +146,8 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 		offset += fc.size
 	}
 
-	// Parse variable-length columns
 	if len(varCols) > 0 && offset < len(page)-4 {
-		// Skip padding/alignment bytes between fixed data and variable section.
-		// The variable section always starts with 0x80.
+		// Scan forward to find the 0x80 variable section flag
 		for offset < len(page)-4 && page[offset] != 0x80 {
 			offset++
 		}
@@ -139,10 +157,11 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 	return &Record{Values: values}, offset, nil
 }
 
-// parseVariableColumns reads the variable-length column section.
-// Format: alternating flag (0x80=has data, 0x00=empty) and cumulative end offsets.
-// Pattern: [flag1] [end1] [flag2] [end2] ... [flagN]
-// Total bytes: 2*N - 1 where N = number of variable columns.
+// Variable section format:
+// [flag0][cumEnd0][flag1][cumEnd1]...[flagN-1] (2*N-1 bytes total)
+// flag=0x80: has data, flag=0x00: NULL
+// cumEnd values are cumulative end offsets into the data area
+// Last column has no cumEnd -- terminated by scanning to 0x00 byte
 func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [][]byte) int {
 	nVar := len(varCols)
 	headerSize := 2*nVar - 1
@@ -151,14 +170,12 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 		return offset
 	}
 
-	// Read the variable section header
 	varHeader := page[offset : offset+headerSize]
 	offset += headerSize
 
-	// Parse flags and cumulative end offsets
 	type varColInfo struct {
 		hasData bool
-		endOff  int // cumulative end offset in variable data area
+		endOff  int
 	}
 	infos := make([]varColInfo, nVar)
 
@@ -175,7 +192,6 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 		}
 	}
 
-	// Calculate variable data sizes and extract
 	varDataStart := offset
 	prevEnd := 0
 	for i, info := range infos {
@@ -184,14 +200,17 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 			continue
 		}
 
-		var start, end int
-		start = prevEnd
+		start := prevEnd
+		var end int
 		if i < nVar-1 {
 			end = info.endOff
 		} else {
-			// Last variable column: scan to find end
-			// Look for the next record boundary (00 00 00 00 followed by col count)
-			end = findVarDataEnd(page, varDataStart, prevEnd)
+			end = start
+			absPos := varDataStart + end
+			for absPos < len(page) && page[absPos] != 0x00 {
+				end++
+				absPos++
+			}
 		}
 
 		if end < start {
@@ -217,7 +236,6 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 		prevEnd = end
 	}
 
-	// Advance offset past variable data
 	if prevEnd > 0 {
 		offset = varDataStart + prevEnd
 	}
@@ -225,39 +243,31 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 	return offset
 }
 
-// findVarDataEnd scans forward from the variable data area to find where
-// the last variable column's data ends. It looks for the record boundary
-// pattern (zero padding followed by a new record's column count).
-func findVarDataEnd(page []byte, varDataStart, currentOffset int) int {
-	pos := varDataStart + currentOffset
-	// Scan for null byte that marks end of variable data
-	for pos < len(page)-8 {
-		if page[pos] == 0x00 {
-			return pos - varDataStart
-		}
-		pos++
-	}
-	return pos - varDataStart
+func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	return ScanTableRecordsMulti(pr, totalPages, []uint16{objectID}, columns, nullBmpExtra...)
 }
 
-// ScanTableRecords reads all Leaf pages for a given objectID and returns
-// parsed records. This requires knowing which objectID maps to which table.
-func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns []ColumnDef) ([]Record, error) {
-	var records []Record
+func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	idSet := make(map[uint16]bool, len(objectIDs))
+	for _, id := range objectIDs {
+		idSet[id] = true
+	}
 
+	var records []Record
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
 			return nil, err
 		}
-		if ClassifyPage(page) != PageLeaf {
+		pt := ClassifyPage(page)
+		if pt != PageLeaf && pt != PageData {
 			continue
 		}
-		if PageObjectID(page) != objectID {
+		if !idSet[PageObjectID(page)] {
 			continue
 		}
 
-		parsed, err := ParsePageRecords(page, columns)
+		parsed, err := ParsePageRecords(page, columns, nullBmpExtra...)
 		if err != nil {
 			continue
 		}
@@ -269,13 +279,6 @@ func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns [
 	return records, nil
 }
 
-// FindTableObjectID scans Leaf pages to find the objectID for a given table
-// by looking for records that contain recognizable data patterns.
-// This is a heuristic approach since the SDF catalog doesn't directly expose
-// the mapping between table names and data page objectIDs.
 func FindTableObjectID(pr *PageReader, totalPages int, tableName string, columns []ColumnDef) (uint16, error) {
-	// We need to try each objectID that has Leaf pages and see which one
-	// produces valid records matching the expected column layout.
-	// This is done by the caller using ScanTableRecords with candidate objectIDs.
 	return 0, fmt.Errorf("use ScanTableRecords with known objectID")
 }

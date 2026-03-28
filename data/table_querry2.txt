@@ -1,0 +1,7 @@
+Result Set (4 items)•••
+TABLE_NAME	COLUMN_NAME	DATA_TYPE	ORDINAL_POSITIONΞΞ	CHARACTER_MAXIMUM_LENGTHΞΞ
+FitParametricElements	BetaConfidenceHi	float	26	null
+Fits	ClosedLoop	bit	14	null
+FitSisoPairs	Significance	float	3	null
+ProcessVariables	NormalMove	float	6	null
+49	

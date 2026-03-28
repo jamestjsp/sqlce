@@ -114,6 +114,44 @@ func TestDatabaseScanWithObjectID(t *testing.T) {
 	}
 }
 
+func TestDatabaseAutoMapping(t *testing.T) {
+	db, err := engine.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	tbl, err := db.Table("Properties")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tbl.Scan()
+	if err != nil {
+		t.Fatalf("Scan without prior mapping: %v", err)
+	}
+	if len(result.Rows) != 6 {
+		t.Errorf("Properties: expected 6 rows, got %d", len(result.Rows))
+	}
+
+	tbl2, err := db.Table("BlcModel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ri, err := tbl2.Rows()
+	if err != nil {
+		t.Fatalf("Rows: %v", err)
+	}
+	count := 0
+	for ri.Next() {
+		count++
+	}
+	ri.Close()
+	if count != 3 {
+		t.Errorf("BlcModel: expected 3 rows, got %d", count)
+	}
+	t.Logf("Auto-mapping works: Properties=%d rows, BlcModel=%d rows", len(result.Rows), count)
+}
+
 func TestDatabaseSetObjectMapping(t *testing.T) {
 	db, err := engine.Open("../data/Depropanizer.sdf")
 	if err != nil {

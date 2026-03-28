@@ -12,7 +12,7 @@ type TableScanner struct {
 	reader     *format.PageReader
 	totalPages int
 	table      *format.TableDef
-	objectID   uint16
+	objectIDs  []uint16
 }
 
 // ScanResult holds the scanned rows from a table.
@@ -22,19 +22,19 @@ type ScanResult struct {
 }
 
 // NewTableScanner creates a scanner for the given table.
-// objectID identifies which Leaf pages belong to this table.
-func NewTableScanner(pr *format.PageReader, totalPages int, table *format.TableDef, objectID uint16) *TableScanner {
+// objectIDs identifies which Leaf pages belong to this table.
+func NewTableScanner(pr *format.PageReader, totalPages int, table *format.TableDef, objectIDs []uint16) *TableScanner {
 	return &TableScanner{
 		reader:     pr,
 		totalPages: totalPages,
 		table:      table,
-		objectID:   objectID,
+		objectIDs:  objectIDs,
 	}
 }
 
 // Scan reads all rows from the table's Leaf pages and returns typed values.
 func (ts *TableScanner) Scan() (*ScanResult, error) {
-	records, err := format.ScanTableRecords(ts.reader, ts.totalPages, ts.objectID, ts.table.Columns)
+	records, err := format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, ts.table.NullBmpExtra)
 	if err != nil {
 		return nil, fmt.Errorf("scanning table %s: %w", ts.table.Name, err)
 	}
@@ -69,14 +69,6 @@ func convertRecord(rec format.Record, columns []format.ColumnDef) ([]any, error)
 			continue
 		}
 
-		ti := format.LookupType(col.TypeID)
-		if ti.IsVariable && (col.TypeID == format.TypeNVarchar || col.TypeID == format.TypeNText) {
-			// Inline record strings are stored as single-byte ASCII,
-			// not UTF-16LE. Return directly as Go string.
-			row[i] = string(data)
-			continue
-		}
-
 		val, err := ConvertValue(data, col.TypeID)
 		if err != nil {
 			row[i] = data // fall back to raw bytes
@@ -87,9 +79,8 @@ func convertRecord(rec format.Record, columns []format.ColumnDef) ([]any, error)
 	return row, nil
 }
 
-// FindTableObjectIDs scans all Leaf pages and returns a map of objectID
-// to the number of records found. This helps identify which objectID
-// belongs to which table by matching record counts.
+// FindTableObjectIDs scans all Leaf and Data pages and returns a map of
+// objectID to the number of records found.
 func FindTableObjectIDs(pr *format.PageReader, totalPages int) (map[uint16]int, error) {
 	counts := make(map[uint16]int)
 
@@ -98,7 +89,8 @@ func FindTableObjectIDs(pr *format.PageReader, totalPages int) (map[uint16]int, 
 		if err != nil {
 			return nil, err
 		}
-		if format.ClassifyPage(page) != format.PageLeaf {
+		pt := format.ClassifyPage(page)
+		if pt != format.PageLeaf && pt != format.PageData {
 			continue
 		}
 		objID := format.PageObjectID(page)
@@ -116,7 +108,7 @@ func FindTableObjectIDs(pr *format.PageReader, totalPages int) (map[uint16]int, 
 // or by testing column parsing against candidate objectIDs.
 func MatchTableToObjectID(pr *format.PageReader, totalPages int, table *format.TableDef, candidates map[uint16]int) (uint16, error) {
 	for objID := range candidates {
-		records, err := format.ScanTableRecords(pr, totalPages, objID, table.Columns)
+		records, err := format.ScanTableRecords(pr, totalPages, objID, table.Columns, table.NullBmpExtra)
 		if err != nil || len(records) == 0 {
 			continue
 		}

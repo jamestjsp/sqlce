@@ -83,3 +83,13 @@ func PageObjectID(page []byte) uint16 {
 	}
 	return uint16(page[4]) | uint16(page[5])<<8
 }
+
+// ParseDataPageTarget reads the uint16 LE value at offset 0x18 on a Data page.
+// This value points to the Leaf objectID that contains the actual row data.
+// Returns 0 for non-Data pages or pages without a valid target.
+func ParseDataPageTarget(page []byte) uint16 {
+	if len(page) < 0x1A || ClassifyPage(page) != PageData {
+		return 0
+	}
+	return uint16(page[0x18]) | uint16(page[0x19])<<8
+}
