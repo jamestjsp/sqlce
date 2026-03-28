@@ -272,6 +272,38 @@ func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, c
 	return records, nil
 }
 
+func ScanTableRecordsPages(pr *PageReader, pages []int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	idSet := make(map[uint16]bool, len(objectIDs))
+	for _, id := range objectIDs {
+		idSet[id] = true
+	}
+
+	var records []Record
+	for _, pg := range pages {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			return nil, err
+		}
+		pt := ClassifyPage(page)
+		if pt != PageLeaf && pt != PageData {
+			continue
+		}
+		if !idSet[PageObjectID(page)] {
+			continue
+		}
+
+		parsed, err := ParsePageRecords(page, columns, nullBmpExtra...)
+		if err != nil {
+			continue
+		}
+		if parsed != nil {
+			records = append(records, parsed.Records...)
+		}
+	}
+
+	return records, nil
+}
+
 func FindTableObjectID(pr *PageReader, totalPages int, tableName string, columns []ColumnDef) (uint16, error) {
 	return 0, fmt.Errorf("use ScanTableRecords with known objectID")
 }
