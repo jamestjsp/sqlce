@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"math"
 	"time"
+	"unicode/utf16"
+
+	"github.com/josephjohnjj/sqlce/format"
 )
 
 // ParseGUID converts 16 bytes in SQL Server mixed-endian format to a standard
@@ -57,4 +60,98 @@ func ParseOLEDateTime(b []byte) (time.Time, error) {
 	t = t.Add(time.Duration(ns))
 
 	return t, nil
+}
+
+// ConvertValue converts raw bytes to a Go value based on the SQL CE type.
+func ConvertValue(data []byte, typeID uint16) (any, error) {
+	le := binary.LittleEndian
+
+	switch typeID {
+	case format.TypeBit:
+		if len(data) < 1 {
+			return nil, fmt.Errorf("bit: need 1 byte, got %d", len(data))
+		}
+		return data[0] != 0, nil
+
+	case format.TypeTinyInt:
+		if len(data) < 1 {
+			return nil, fmt.Errorf("tinyint: need 1 byte, got %d", len(data))
+		}
+		return data[0], nil
+
+	case format.TypeSmallInt:
+		if len(data) < 2 {
+			return nil, fmt.Errorf("smallint: need 2 bytes, got %d", len(data))
+		}
+		return int16(le.Uint16(data)), nil
+
+	case format.TypeInt:
+		if len(data) < 4 {
+			return nil, fmt.Errorf("int: need 4 bytes, got %d", len(data))
+		}
+		return int32(le.Uint32(data)), nil
+
+	case format.TypeBigInt:
+		if len(data) < 8 {
+			return nil, fmt.Errorf("bigint: need 8 bytes, got %d", len(data))
+		}
+		return int64(le.Uint64(data)), nil
+
+	case format.TypeReal:
+		if len(data) < 4 {
+			return nil, fmt.Errorf("real: need 4 bytes, got %d", len(data))
+		}
+		return math.Float32frombits(le.Uint32(data)), nil
+
+	case format.TypeFloat:
+		if len(data) < 8 {
+			return nil, fmt.Errorf("float: need 8 bytes, got %d", len(data))
+		}
+		return math.Float64frombits(le.Uint64(data)), nil
+
+	case format.TypeMoney:
+		if len(data) < 8 {
+			return nil, fmt.Errorf("money: need 8 bytes, got %d", len(data))
+		}
+		return int64(le.Uint64(data)), nil
+
+	case format.TypeDatetime:
+		return ParseOLEDateTime(data)
+
+	case format.TypeUniqueIdentifier:
+		return ParseGUID(data)
+
+	case format.TypeNVarchar, format.TypeNText:
+		return decodeUTF16LE(data), nil
+
+	case format.TypeBinary, format.TypeVarBinary, format.TypeImage, format.TypeRowVersion:
+		out := make([]byte, len(data))
+		copy(out, data)
+		return out, nil
+
+	case format.TypeNumeric:
+		// Numeric stored as raw bytes; return as hex string for now
+		return fmt.Sprintf("%x", data), nil
+
+	default:
+		out := make([]byte, len(data))
+		copy(out, data)
+		return out, nil
+	}
+}
+
+// decodeUTF16LE converts a UTF-16LE byte slice to a Go string.
+func decodeUTF16LE(b []byte) string {
+	if len(b) < 2 {
+		return ""
+	}
+	// Trim trailing null characters
+	for len(b) >= 2 && b[len(b)-1] == 0 && b[len(b)-2] == 0 {
+		b = b[:len(b)-2]
+	}
+	u16s := make([]uint16, len(b)/2)
+	for i := range u16s {
+		u16s[i] = binary.LittleEndian.Uint16(b[i*2:])
+	}
+	return string(utf16.Decode(u16s))
 }
