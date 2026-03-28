@@ -55,6 +55,7 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 			tx.Rollback()
 			continue
 		}
+		var execErr error
 		for _, row := range result.Rows {
 			args := make([]any, len(cols))
 			for i := range cols {
@@ -62,10 +63,18 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 					args[i] = row[i]
 				}
 			}
-			stmt.Exec(args...)
+			if _, err := stmt.Exec(args...); err != nil {
+				execErr = err
+			}
 		}
 		stmt.Close()
-		tx.Commit()
+		if execErr != nil {
+			tx.Rollback()
+			continue
+		}
+		if err := tx.Commit(); err != nil {
+			tx.Rollback()
+		}
 	}
 
 	return sqliteDB, nil
