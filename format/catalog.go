@@ -134,6 +134,9 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 			}
 
 			entry := slot.data
+			if len(entry) < 4 {
+				continue
+			}
 			// Follow nextChunk chain for multi-page records
 			nextChunk := le.Uint32(entry[:4])
 			if nextChunk != 0 {
