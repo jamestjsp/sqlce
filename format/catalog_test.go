@@ -184,6 +184,49 @@ func TestCatalogBlocksColumns(t *testing.T) {
 	}
 }
 
+
+func TestCatalogRecoveredColumns(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h, _ := ReadHeader(f)
+	fi, _ := f.Stat()
+	pr := NewPageReader(f, h, 128)
+	cat, _ := ReadCatalog(pr, int(fi.Size())/h.PageSize)
+
+	cases := []struct {
+		table, column string
+	}{
+		{"Blocks", "IsFormulaValid"},
+		{"SisoRelation", "SisoRelationIdentifier"},
+		{"ControllerVariableReference", "ParentIdentifier"},
+		{"ProcessVariables", "NormalMove"},
+		{"CodeBlock", "ItemSequenceIdentifier"},
+		{"EstimatorVariableSet", "Maintenance"},
+		{"FitCharts", "ChartIdentifier"},
+		{"Fits", "ClosedLoop"},
+	}
+	for _, tc := range cases {
+		td := cat.TableByName(tc.table)
+		if td == nil {
+			t.Errorf("table %s not found", tc.table)
+			continue
+		}
+		found := false
+		for _, c := range td.Columns {
+			if c.Name == tc.column {
+				found = true
+				t.Logf("  %s.%s: ordinal=%d typeID=0x%02X", tc.table, tc.column, c.Ordinal, c.TypeID)
+			}
+		}
+		if !found {
+			t.Errorf("MISSING: %s.%s", tc.table, tc.column)
+		}
+	}
+}
+
 func TestCatalogObjectMap(t *testing.T) {
 	f, err := os.Open("../data/Depropanizer.sdf")
 	if err != nil {
