@@ -149,6 +149,62 @@ func TestIntegration_DatabaseSQL(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_ControlLayerQuery(t *testing.T) {
+	sdfDB, err := engine.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatalf("Open SDF: %v", err)
+	}
+	defer sdfDB.Close()
+
+	requiredTables := []string{
+		"Relation", "ItemInformation", "RelationBlocks", "Blocks",
+		"ModelLayerBlocks", "ModelLayers", "SisoRelation", "SisoElements",
+		"ParametricElements", "ProcessVariables", "ControllerVariableReference",
+		"VariableRole", "BlcModel", "Loop", "CVRole", "EconomicFunction",
+		"VariableTransform", "Models", "ExecutionSequence", "UserParameter",
+	}
+
+	allPresent := true
+	for _, name := range requiredTables {
+		tbl, err := sdfDB.Table(name)
+		if err != nil {
+			t.Errorf("missing table: %s", name)
+			allPresent = false
+			continue
+		}
+		result, err := tbl.Scan()
+		if err != nil {
+			t.Logf("  %s: scan error: %v", name, err)
+			continue
+		}
+		t.Logf("  %s: %d rows", name, len(result.Rows))
+	}
+
+	if !allPresent {
+		t.Fatal("not all required tables present")
+	}
+
+	sqliteRef, err := sql.Open("sqlite", "../data/Depropanizer.db")
+	if err != nil {
+		t.Fatalf("Open SQLite ref: %v", err)
+	}
+	defer sqliteRef.Close()
+
+	queries := map[string]string{
+		"Query6_ExecutionSequence": "SELECT ExecutionSequenceIdentifier, IsDefault, ExecutionIntervalInMilliseconds FROM ExecutionSequence",
+		"Query3_EconomicFunction": "SELECT COUNT(*) FROM EconomicFunction",
+		"Query5_Models":           "SELECT COUNT(*) FROM Models",
+	}
+
+	for qName, q := range queries {
+		t.Run(qName, func(t *testing.T) {
+			var refCount int
+			sqliteRef.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM (%s)", q)).Scan(&refCount)
+			t.Logf("  reference: %d rows", refCount)
+		})
+	}
+}
+
 // TestIntegration_CompareWithSQLite compares mapped tables against SQLite reference.
 func TestIntegration_CompareWithSQLite(t *testing.T) {
 	// Open SDF

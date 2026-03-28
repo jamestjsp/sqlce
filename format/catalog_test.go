@@ -183,3 +183,49 @@ func TestCatalogBlocksColumns(t *testing.T) {
 		t.Error("ResponsePlotType column not found")
 	}
 }
+
+func TestCatalogObjectMap(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	h, _ := ReadHeader(f)
+	fi, _ := f.Stat()
+	totalPages := int(fi.Size()) / h.PageSize
+	pr := NewPageReader(f, h, 128)
+
+	cat, err := ReadCatalog(pr, totalPages)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("ObjectMap has %d entries", len(cat.ObjectMap))
+
+	knownMappings := map[string]uint16{
+		"Properties":                1305,
+		"BlcModel":                  1395,
+		"DataArrayTypes":            1321,
+		"ExternalRuntimeDataSource": 1697,
+	}
+
+	for table, expectedObjID := range knownMappings {
+		objID, ok := cat.ObjectMap[table]
+		if !ok {
+			t.Errorf("%s: not in ObjectMap", table)
+			continue
+		}
+		if objID != expectedObjID {
+			t.Errorf("%s: objectID=%d, want %d", table, objID, expectedObjID)
+		}
+	}
+
+	if len(cat.ObjectMap) < 50 {
+		t.Errorf("expected at least 50 ObjectMap entries, got %d", len(cat.ObjectMap))
+	}
+
+	for name, objID := range cat.ObjectMap {
+		t.Logf("  %s -> %d", name, objID)
+	}
+}

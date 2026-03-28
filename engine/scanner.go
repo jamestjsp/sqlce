@@ -69,14 +69,6 @@ func convertRecord(rec format.Record, columns []format.ColumnDef) ([]any, error)
 			continue
 		}
 
-		ti := format.LookupType(col.TypeID)
-		if ti.IsVariable && (col.TypeID == format.TypeNVarchar || col.TypeID == format.TypeNText) {
-			// Inline record strings are stored as single-byte ASCII,
-			// not UTF-16LE. Return directly as Go string.
-			row[i] = string(data)
-			continue
-		}
-
 		val, err := ConvertValue(data, col.TypeID)
 		if err != nil {
 			row[i] = data // fall back to raw bytes
@@ -87,9 +79,8 @@ func convertRecord(rec format.Record, columns []format.ColumnDef) ([]any, error)
 	return row, nil
 }
 
-// FindTableObjectIDs scans all Leaf pages and returns a map of objectID
-// to the number of records found. This helps identify which objectID
-// belongs to which table by matching record counts.
+// FindTableObjectIDs scans all Leaf and Data pages and returns a map of
+// objectID to the number of records found.
 func FindTableObjectIDs(pr *format.PageReader, totalPages int) (map[uint16]int, error) {
 	counts := make(map[uint16]int)
 
@@ -98,7 +89,8 @@ func FindTableObjectIDs(pr *format.PageReader, totalPages int) (map[uint16]int, 
 		if err != nil {
 			return nil, err
 		}
-		if format.ClassifyPage(page) != format.PageLeaf {
+		pt := format.ClassifyPage(page)
+		if pt != format.PageLeaf && pt != format.PageData {
 			continue
 		}
 		objID := format.PageObjectID(page)

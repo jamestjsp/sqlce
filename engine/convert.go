@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/big"
 	"time"
 	"unicode/utf16"
 
@@ -121,8 +122,16 @@ func ConvertValue(data []byte, typeID uint16) (any, error) {
 	case format.TypeUniqueIdentifier:
 		return ParseGUID(data)
 
-	case format.TypeNVarchar, format.TypeNText:
-		return decodeUTF16LE(data), nil
+	case format.TypeNVarchar, format.TypeNChar:
+		if isUTF16LE(data) {
+			return decodeUTF16LE(data), nil
+		}
+		return string(data), nil
+
+	case format.TypeNText:
+		out := make([]byte, len(data))
+		copy(out, data)
+		return out, nil
 
 	case format.TypeBinary, format.TypeVarBinary, format.TypeImage, format.TypeRowVersion:
 		out := make([]byte, len(data))
@@ -130,14 +139,59 @@ func ConvertValue(data []byte, typeID uint16) (any, error) {
 		return out, nil
 
 	case format.TypeNumeric:
-		// Numeric stored as raw bytes; return as hex string for now
-		return fmt.Sprintf("%x", data), nil
+		return parseNumeric(data)
 
 	default:
 		out := make([]byte, len(data))
 		copy(out, data)
 		return out, nil
 	}
+}
+
+// parseNumeric decodes a 19-byte SQL CE numeric value.
+// Format: [precision u8][scale u8][sign u8 (1=pos,0=neg)][16-byte uint128 LE]
+func parseNumeric(data []byte) (string, error) {
+	if len(data) != 19 {
+		return fmt.Sprintf("%x", data), nil
+	}
+
+	scale := int(data[1])
+	sign := data[2]
+
+	val := new(big.Int)
+	be := make([]byte, 16)
+	for i := 0; i < 16; i++ {
+		be[i] = data[18-i]
+	}
+	val.SetBytes(be)
+
+	s := val.String()
+
+	if scale > 0 {
+		if len(s) <= scale {
+			s = fmt.Sprintf("%0*s", scale+1, s)
+		}
+		s = s[:len(s)-scale] + "." + s[len(s)-scale:]
+	}
+
+	if sign == 0 {
+		s = "-" + s
+	}
+
+	return s, nil
+}
+
+func isUTF16LE(data []byte) bool {
+	if len(data) < 2 || len(data)%2 != 0 {
+		return false
+	}
+	zeros := 0
+	for i := 1; i < len(data); i += 2 {
+		if data[i] == 0 && data[i-1] != 0 {
+			zeros++
+		}
+	}
+	return zeros > len(data)/4
 }
 
 // decodeUTF16LE converts a UTF-16LE byte slice to a Go string.

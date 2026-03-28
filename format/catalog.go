@@ -33,7 +33,8 @@ import (
 
 // Catalog holds the parsed schema metadata for all tables in the database.
 type Catalog struct {
-	Tables []TableDef
+	Tables    []TableDef
+	ObjectMap map[string]uint16
 }
 
 // TableDef describes a single table.
@@ -95,7 +96,9 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		return tables[i].Name < tables[j].Name
 	})
 
-	return &Catalog{Tables: tables}, nil
+	objectMap := extractObjectMap(pr, totalPages)
+
+	return &Catalog{Tables: tables, ObjectMap: objectMap}, nil
 }
 
 // Minimum bytes before a name string needed to read metadata fields.
@@ -244,6 +247,28 @@ func ExtractTableNames(entries []CatalogEntry) []string {
 	return names
 }
 
+// ScanDataPageTargets scans all Data (0x30) pages and returns a map from
+// Data page objectID to the target Leaf objectID stored at offset 0x18.
+// Entries with target 0 (empty tables) are excluded.
+func ScanDataPageTargets(pr *PageReader, totalPages int) map[uint16]uint16 {
+	targets := make(map[uint16]uint16)
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			continue
+		}
+		if ClassifyPage(page) != PageData {
+			continue
+		}
+		target := ParseDataPageTarget(page)
+		if target != 0 {
+			objID := PageObjectID(page)
+			targets[objID] = target
+		}
+	}
+	return targets
+}
+
 func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 	var results []CatalogEntry
 	n := len(page) - 64
@@ -286,4 +311,59 @@ func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 		}
 	}
 	return results
+}
+
+const sysObjectsMarker = "__SysObjects\x00"
+const sysObjectsObjIDOffset = 62
+
+func extractObjectMap(pr *PageReader, totalPages int) map[string]uint16 {
+	dataTargets := ScanDataPageTargets(pr, totalPages)
+
+	seen := make(map[string]bool)
+	objectMap := make(map[string]uint16)
+
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			continue
+		}
+		if ClassifyPage(page) != PageLeaf {
+			continue
+		}
+		extractSysObjectRecords(page, dataTargets, seen, objectMap)
+	}
+
+	return objectMap
+}
+
+func extractSysObjectRecords(page []byte, dataTargets map[uint16]uint16, seen map[string]bool, objectMap map[string]uint16) {
+	n := len(page) - 16
+
+	for i := 0x20; i < n-len(sysObjectsMarker)-2; i++ {
+		if string(page[i:i+len(sysObjectsMarker)]) != sysObjectsMarker {
+			continue
+		}
+
+		nameStart := i + len(sysObjectsMarker)
+		nameEnd := nameStart
+		for nameEnd < n && page[nameEnd] != 0 && page[nameEnd] >= 32 && page[nameEnd] < 127 {
+			nameEnd++
+		}
+		tableName := string(page[nameStart:nameEnd])
+		if len(tableName) < 2 || seen[tableName] {
+			continue
+		}
+
+		off := i - sysObjectsObjIDOffset
+		if off < 0 || off+2 > len(page) {
+			continue
+		}
+
+		dataObjID := binary.LittleEndian.Uint16(page[off : off+2])
+		leafObjID, hasLeaf := dataTargets[dataObjID]
+		if hasLeaf {
+			seen[tableName] = true
+			objectMap[tableName] = leafObjID
+		}
+	}
 }

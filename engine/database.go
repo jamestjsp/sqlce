@@ -66,6 +66,7 @@ func openFromFile(f *os.File) (*Database, error) {
 		reader:     pr,
 		catalog:    catalog,
 		totalPages: totalPages,
+		objMapping: catalog.ObjectMap,
 	}
 
 	return db, nil
@@ -185,7 +186,7 @@ func (t *Table) ColumnCount() int {
 // known (via BuildObjectMapping or SetObjectMapping on the database).
 func (t *Table) Scan() (*ScanResult, error) {
 	if t.objID == 0 {
-		return nil, fmt.Errorf("objectID unknown for table %q; call BuildObjectMapping first", t.def.Name)
+		return nil, fmt.Errorf("objectID unknown for table %q; use ScanWithObjectID or WITH OBJECTID in SQL", t.def.Name)
 	}
 
 	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, t.objID)
