@@ -56,31 +56,23 @@ func TestDataValidation(t *testing.T) {
 		sqliteRowCounts[table.Name] = count
 	}
 
-	// Collect objectID info from SDF
-	objInfos, err := engine.CollectObjectIDInfo(pr, totalPages)
-	if err != nil {
-		t.Fatalf("CollectObjectIDInfo: %v", err)
-	}
-	t.Logf("Found %d objectIDs, %d tables with SQLite row counts", len(objInfos), len(sqliteRowCounts))
+	// Use catalog's deterministic ObjectMap (derived from TABLE pages)
+	mapping := catalog.ObjectMap
+	t.Logf("Mapped %d/%d tables to objectIDs (via catalog ObjectMap)", len(mapping), len(catalog.Tables))
 
-	// Build table→objectID mapping
-	mapping := engine.BuildTableMapping(catalog, objInfos, sqliteRowCounts)
-	t.Logf("Mapped %d/%d tables to objectIDs", len(mapping), len(catalog.Tables))
-
-	// Track statistics
 	matchedTables := 0
 	rowCountMatches := 0
 	rowCountMismatches := 0
 	valueErrors := 0
 	valuePasses := 0
 
-	for tableName, objID := range mapping {
+	for tableName, objIDs := range mapping {
 		table := catalog.TableByName(tableName)
 		if table == nil {
 			continue
 		}
 
-		scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{objID})
+		scanner := engine.NewTableScanner(pr, totalPages, table, objIDs)
 		result, err := scanner.Scan()
 		if err != nil {
 			t.Logf("  SKIP %s: scan error: %v", tableName, err)
@@ -285,12 +277,12 @@ func TestDataValidation(t *testing.T) {
 	t.Run("BroadRowCounts", func(t *testing.T) {
 		matched := 0
 		mismatched := 0
-		for tableName, objID := range mapping {
+		for tableName, objIDs := range mapping {
 			table := catalog.TableByName(tableName)
 			if table == nil {
 				continue
 			}
-			scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{objID})
+			scanner := engine.NewTableScanner(pr, totalPages, table, objIDs)
 			result, err := scanner.Scan()
 			if err != nil {
 				continue
