@@ -1,29 +1,24 @@
 package format
 
-// Catalog Format Notes (Spike Findings)
+// __SysObjects is the single master catalog table in SQL CE 4.0.
+// It stores tables, columns, indexes, and constraints as rows differentiated
+// by ObjectType (field at fixed[0:2]):
+//   ObjectType=1: Table definition (ObjectName=tableName, TablePageId at fixed[16:20])
+//   ObjectType=4: Column definition (ObjectOwner=tableName, ObjectName=colName)
+//   ObjectType=8: Constraint definition
 //
-// SQL CE stores metadata in system tables (__SysObjects, __SysColumns, etc.)
-// within Leaf pages (type 0x40).
+// All catalog records have colCount=38 and share this fixed-data layout
+// (offsets relative to start of fixed section, after 7-byte bitmap):
+//   fixed[0:2]   ObjectType   (uint16 LE)
+//   fixed[12:14]  ColumnType   (uint16 LE) — SQL CE type ID
+//   fixed[14:16]  ObjectOrdinal(uint16 LE) — 1-based column ordinal
+//   fixed[16:20]  TablePageId  (uint32 LE) — data page ID for tables
+//   fixed[32:34]  ColumnSize   (uint16 LE) — max length in bytes
 //
-// Binary layout of a column catalog record:
-//
-//   Each record has a ~85-byte fixed header followed by two null-terminated
-//   ASCII strings (table name, column/object name). Key fields are at fixed
-//   offsets relative to the start of the name string:
-//
-//     name_offset - 66: u16 LE = Type ID (SQL CE internal type number)
-//     name_offset - 64: u16 LE = Ordinal position (1-based column index)
-//     name_offset - 46: u16 LE = Max length in bytes
-//
-//   Type ID mapping (discovered from sample data):
-//     0x02 = smallint (2 bytes)
-//     0x03 = int (4 bytes)
-//     0x05 = float/real (4 bytes)
-//     0x06 = float/double (8 bytes)
-//     0x07 = datetime
-//     0x0B = bit
-//     0x1F = nvarchar (variable length, UTF-16)
-//     0x65 = uniqueidentifier (16-byte GUID)
+// Variable section (2 null-terminated ASCII strings starting 85 bytes after
+// the bitmap, i.e. 93 bytes from record start):
+//   ObjectOwner: parent name ("__SysObjects" for tables, tableName for columns)
+//   ObjectName:  object name (tableName for tables, columnName for columns)
 
 import (
 	"encoding/binary"
@@ -62,16 +57,63 @@ func (c *Catalog) TableByName(name string) *TableDef {
 	return nil
 }
 
-// ReadCatalog scans the database and builds a Catalog of table/column definitions.
+// sysObjColCount is the column count for __SysObjects records (38 columns).
+const sysObjColCount = 38
+
+// Fixed-section field offsets within __SysObjects records (from start of fixed data).
+const (
+	sysObjOffObjectType    = 0  // uint16: 1=Table, 4=Column
+	sysObjOffColumnType    = 12 // uint16: SQL CE type ID
+	sysObjOffObjectOrdinal = 14 // uint16: column ordinal (1-based)
+	sysObjOffTablePageId   = 16 // uint32: data page ID for table records
+	sysObjOffColumnSize    = 32 // uint16: max length in bytes
+)
+
+// Byte offset from bitmap start to variable data (strings).
+// = 7 (bitmap) + 59 (fixed) + 19 (var header) = 85
+const sysObjVarDataOffset = 85
+
+// ReadCatalog parses the __SysObjects system catalog to build table/column definitions.
+//
+// DATA pages (type 0x40) use a slotted page format: a slot array at the page end
+// gives each entry's offset and size, so records are extracted precisely without
+// pattern-matching. This eliminates the page-boundary overflow problem.
 func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
-	colMap := make(map[struct{ table, column string }]*ColumnDef)
-	tableSet := make(map[string]bool)
-	// Overflow records: name pairs found at the start of B-tree pages
-	// where the metadata (at name_offset - 66) is on the preceding page.
-	var overflow []struct{ table, column string }
-	// DF__ columns: extracted from default constraint records, added only if
-	// the column wasn't already found by the regular heuristic.
-	var dfColumns []struct{ table, column string }
+	le := binary.LittleEndian
+
+	type tableEntry struct {
+		name   string
+		pageID uint32
+	}
+	type columnEntry struct {
+		table   string
+		column  string
+		typeID  uint16
+		ordinal int
+		maxLen  int
+	}
+
+	var tables []tableEntry
+	var columns []columnEntry
+	seenTables := make(map[string]bool)
+	seenCols := make(map[struct{ t, c string }]bool)
+
+	// Build objectID → file page number mapping for Leaf pages.
+	// nextChunk pointers use logical page IDs (= objectID at page[4:6]).
+	objIDToFilePage := make(map[uint16]int)
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			continue
+		}
+		if ClassifyPage(page) != PageLeaf {
+			continue
+		}
+		objID := PageObjectID(page)
+		if _, exists := objIDToFilePage[objID]; !exists {
+			objIDToFilePage[objID] = pg
+		}
+	}
 
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
@@ -81,76 +123,242 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		if ClassifyPage(page) != PageLeaf {
 			continue
 		}
-		extractColumnRecords(page, colMap, tableSet, &dfColumns)
-		extractOverflowRecords(page, colMap, tableSet, &overflow)
-	}
 
-	// Build a map of column name → known (typeID, maxLen) from successfully
-	// parsed records, used to recover type info for overflow/DF__ records.
-	colTypeLookup := make(map[string]*ColumnDef)
-	for _, col := range colMap {
-		if col.TypeID != 0 {
-			if existing, ok := colTypeLookup[col.Name]; !ok || existing.TypeID == 0 {
-				colTypeLookup[col.Name] = col
+		slots := readDataPageSlots(page)
+		for _, slot := range slots {
+			if slot.flags&1 != 0 {
+				continue // free/empty
+			}
+			if slot.flags&2 == 0 {
+				continue // continuation entry, handled via nextChunk
+			}
+
+			entry := slot.data
+			// Follow nextChunk chain for multi-page records
+			nextChunk := le.Uint32(entry[:4])
+			if nextChunk != 0 {
+				entry = followChunks(pr, entry, nextChunk, objIDToFilePage)
+			}
+
+			if len(entry) < 93+4 {
+				continue
+			}
+
+			colCount := le.Uint32(entry[4:8])
+			if colCount != sysObjColCount {
+				continue
+			}
+
+			afterCC := 8
+			fixedStart := afterCC + 7
+			varStart := afterCC + sysObjVarDataOffset
+
+			if varStart+4 > len(entry) {
+				continue
+			}
+
+			objectType := le.Uint16(entry[fixedStart+sysObjOffObjectType:])
+			owner, name := readTwoStrings(entry, varStart)
+			if name == "" {
+				continue
+			}
+
+			switch objectType {
+			case 1: // Table
+				if !seenTables[name] && !strings.HasPrefix(name, "__Sys") {
+					seenTables[name] = true
+					pageID := le.Uint32(entry[fixedStart+sysObjOffTablePageId:])
+					tables = append(tables, tableEntry{name: name, pageID: pageID})
+				}
+			case 4: // Column
+				if strings.HasPrefix(owner, "__Sys") {
+					continue
+				}
+				key := struct{ t, c string }{owner, name}
+				if !seenCols[key] {
+					seenCols[key] = true
+					columns = append(columns, columnEntry{
+						table:   owner,
+						column:  name,
+						typeID:  le.Uint16(entry[fixedStart+sysObjOffColumnType:]),
+						ordinal: int(le.Uint16(entry[fixedStart+sysObjOffObjectOrdinal:])),
+						maxLen:  int(le.Uint16(entry[fixedStart+sysObjOffColumnSize:])),
+					})
+				}
 			}
 		}
 	}
 
-	// Recover overflow records (page-start name pairs without metadata)
-	recoverOverflowRecords(colMap, tableSet, overflow, colTypeLookup)
-
-	// Add DF__-extracted columns only for those not already found
-	for _, dc := range dfColumns {
-		key := struct{ table, column string }{dc.table, dc.column}
-		if _, exists := colMap[key]; !exists {
-			tableSet[dc.table] = true
-			var typeID uint16
-			var maxLen int
-			if ref, ok := colTypeLookup[dc.column]; ok {
-				typeID = ref.TypeID
-				maxLen = ref.MaxLength
-			}
-			colMap[key] = &ColumnDef{
-				Name:      dc.column,
-				TypeID:    typeID,
-				Ordinal:   0,
-				MaxLength: maxLen,
-			}
+	// Build objectMap: tableName → leaf page objectIDs
+	parentToLeafIDs := scanLeafPagesByParent(pr, totalPages)
+	objectMap := make(map[string][]uint16, len(tables))
+	for _, t := range tables {
+		if leafIDs, ok := parentToLeafIDs[uint16(t.pageID)]; ok {
+			objectMap[t.name] = leafIDs
 		}
 	}
-
-	// Assign ordinals to any columns still missing them
-	recoverMissingOrdinals(colMap)
-
-	objectMap := extractObjectMap(pr, totalPages)
-
-	// Infer types for columns with typeID=0 using data page record structure
-	inferMissingTypes(pr, totalPages, colMap, objectMap)
-
-	// Apply reference schema to fix remaining typeID=0 columns and add missing columns
-	applyReferenceSchema(colMap, tableSet)
 
 	// Group columns by table
 	tableCols := make(map[string][]ColumnDef)
-	for k, col := range colMap {
-		tableCols[k.table] = append(tableCols[k.table], *col)
+	for _, c := range columns {
+		tableCols[c.table] = append(tableCols[c.table], ColumnDef{
+			Name:      c.column,
+			TypeID:    c.typeID,
+			Ordinal:   c.ordinal,
+			MaxLength: c.maxLen,
+		})
 	}
 
 	// Build sorted table list
-	var tables []TableDef
-	for name := range tableSet {
-		cols := tableCols[name]
+	var tableDefs []TableDef
+	for _, t := range tables {
+		cols := tableCols[t.name]
 		sort.Slice(cols, func(i, j int) bool {
 			return cols[i].Ordinal < cols[j].Ordinal
 		})
 		bmpExtra := computeNullBmpExtra(cols)
-		tables = append(tables, TableDef{Name: name, Columns: cols, NullBmpExtra: bmpExtra})
+		tableDefs = append(tableDefs, TableDef{Name: t.name, Columns: cols, NullBmpExtra: bmpExtra})
 	}
-	sort.Slice(tables, func(i, j int) bool {
-		return tables[i].Name < tables[j].Name
+	sort.Slice(tableDefs, func(i, j int) bool {
+		return tableDefs[i].Name < tableDefs[j].Name
 	})
 
-	return &Catalog{Tables: tables, ObjectMap: objectMap}, nil
+	return &Catalog{Tables: tableDefs, ObjectMap: objectMap}, nil
+}
+
+type dataSlot struct {
+	data  []byte
+	flags uint32
+}
+
+// readDataPageSlots extracts entries from a DATA/Leaf page using its slot array.
+//
+// DATA page layout:
+//   [page header 16B][data header 8B][entries...][...slot array]
+//
+// The slot array grows backwards from the page end (4 bytes per slot).
+// Each slot dword: offset[11:0], size[23:12], flags[31:24]
+// Flag bit 0 = empty/free, flag bit 1 = start of new record.
+func readDataPageSlots(page []byte) []dataSlot {
+	if len(page) < 32 {
+		return nil
+	}
+	le := binary.LittleEndian
+
+	dword := le.Uint32(page[20:24])
+	entriesCount := int(dword & 0xFFF)
+
+	if entriesCount == 0 || entriesCount > 500 {
+		return nil
+	}
+
+	var slots []dataSlot
+	pageLen := len(page)
+
+	for i := 0; i < entriesCount; i++ {
+		slotPos := pageLen - 4 - 4*i
+		if slotPos < 24 {
+			break
+		}
+		sd := le.Uint32(page[slotPos:])
+		entryOffset := int(sd & 0xFFF)
+		entrySize := int((sd >> 12) & 0xFFF)
+		flags := sd >> 24
+
+		start := entryOffset + 24
+		end := start + entrySize
+		if start >= pageLen || end > pageLen || end <= start {
+			continue
+		}
+
+		slots = append(slots, dataSlot{data: page[start:end], flags: flags})
+	}
+	return slots
+}
+
+// readDataPageEntries returns just entry data (for backward compat with record.go).
+func readDataPageEntries(page []byte) [][]byte {
+	slots := readDataPageSlots(page)
+	entries := make([][]byte, 0, len(slots))
+	for _, s := range slots {
+		if s.flags&1 == 0 {
+			entries = append(entries, s.data)
+		}
+	}
+	return entries
+}
+
+// followChunks reassembles a multi-page record by following nextChunk pointers.
+// nextChunk format: logicalPageId[31:12], entryIndex[11:0].
+// objIDToFilePage maps logical page IDs (= objectIDs) to file page numbers.
+func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, objIDToFilePage map[uint16]int) []byte {
+	buf := make([]byte, len(firstEntry))
+	copy(buf, firstEntry)
+
+	for i := 0; i < 20 && nextChunk != 0; i++ {
+		logicalPageID := uint16(nextChunk >> 12)
+		entryIdx := int(nextChunk & 0xFFF)
+
+		filePage, ok := objIDToFilePage[logicalPageID]
+		if !ok {
+			break
+		}
+
+		page, err := pr.ReadPage(filePage)
+		if err != nil {
+			break
+		}
+
+		slots := readDataPageSlots(page)
+		if entryIdx >= len(slots) {
+			break
+		}
+
+		contData := slots[entryIdx].data
+		if len(contData) < 4 {
+			break
+		}
+
+		nextChunk = binary.LittleEndian.Uint32(contData[:4])
+		buf = append(buf, contData[4:]...)
+	}
+	return buf
+}
+
+// readTwoStrings reads two consecutive null-terminated ASCII strings from data at offset.
+func readTwoStrings(data []byte, offset int) (string, string) {
+	n := len(data)
+	if offset >= n {
+		return "", ""
+	}
+
+	end1 := offset
+	for end1 < n && data[end1] != 0 {
+		if data[end1] < 32 || data[end1] >= 127 {
+			return "", ""
+		}
+		end1++
+	}
+	if end1 >= n || end1 == offset {
+		return "", ""
+	}
+	s1 := string(data[offset:end1])
+	end1++
+
+	if end1 >= n || data[end1] < 32 || data[end1] >= 127 {
+		return s1, ""
+	}
+	end2 := end1
+	for end2 < n && data[end2] != 0 {
+		if data[end2] < 32 || data[end2] >= 127 {
+			return s1, ""
+		}
+		end2++
+	}
+	if end2 >= n || end2 == end1 {
+		return s1, ""
+	}
+	return s1, string(data[end1:end2])
 }
 
 // computeNullBmpExtra calculates the extra null bitmap bytes from column definitions.
@@ -171,535 +379,6 @@ func computeNullBmpExtra(cols []ColumnDef) int {
 		return 0
 	}
 	return total - 1
-}
-
-// extractOverflowRecords collects name pairs at the start of B-tree leaf pages
-// where the record's metadata overflows from the preceding page. When a catalog
-// B-tree record spans two pages, the variable data (table name + column name)
-// may be split. We scan for readable ASCII strings near offset 0x18.
-func extractOverflowRecords(page []byte, colMap map[struct{ table, column string }]*ColumnDef, _ map[string]bool, overflow *[]struct{ table, column string }) {
-	n := len(page) - 64
-	if n < 0x20 {
-		return
-	}
-
-	// Scan for the first two null-terminated ASCII strings in the first ~100 bytes
-	// of the data area. These may be [tableName\x00colName\x00] or
-	// [partialTableTail\x00colName\x00] for overflow records.
-	var strs []struct {
-		start int
-		value string
-	}
-	i := 0x1C
-	limit := 0x18 + metadataPrefix + 40
-	if limit > n {
-		limit = n
-	}
-	for i < limit && len(strs) < 2 {
-		b := page[i]
-		if b >= 32 && b < 127 {
-			start := i
-			for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
-				i++
-			}
-			if i < n && page[i] == 0 {
-				s := string(page[start:i])
-				if len(s) >= 2 {
-					strs = append(strs, struct {
-						start int
-						value string
-					}{start, s})
-				}
-				i++
-				continue
-			}
-		}
-		i++
-	}
-
-	if len(strs) < 2 {
-		return
-	}
-
-	tableName := strs[0].value
-	colName := strs[1].value
-
-	// Filter: skip constraints (FK__, PK__, DF__) and system objects
-	if isFilteredName(tableName) || isFilteredName(colName) {
-		return
-	}
-	if strings.HasPrefix(tableName, "__Sys") || strings.HasPrefix(colName, "__Sys") {
-		return
-	}
-
-	// Only collect if within the overflow zone (first ~66 bytes of data area)
-	if strs[0].start >= 0x18+metadataPrefix {
-		return
-	}
-
-	key := struct{ table, column string }{tableName, colName}
-	if _, exists := colMap[key]; !exists {
-		*overflow = append(*overflow, key)
-	}
-}
-
-// recoverOverflowRecords fills in metadata for overflow name pairs by:
-// 1. Resolving partial table names (overflow may split mid-name)
-// 2. Matching the column name against known columns in other tables (for typeID/maxLen)
-// 3. Finding the ordinal gap in the table's existing column sequence
-func recoverOverflowRecords(colMap map[struct{ table, column string }]*ColumnDef, tableSet map[string]bool, overflow []struct{ table, column string }, colTypeLookup map[string]*ColumnDef) {
-	// Build per-table ordinal sets from already-parsed columns
-	tableOrdinals := make(map[string]map[int]bool)
-	tableMaxOrdinal := make(map[string]int)
-	for k, col := range colMap {
-		if tableOrdinals[k.table] == nil {
-			tableOrdinals[k.table] = make(map[int]bool)
-		}
-		tableOrdinals[k.table][col.Ordinal] = true
-		if col.Ordinal > tableMaxOrdinal[k.table] {
-			tableMaxOrdinal[k.table] = col.Ordinal
-		}
-	}
-
-	// Collect known table names for partial-name resolution
-	var knownTables []string
-	for name := range tableSet {
-		knownTables = append(knownTables, name)
-	}
-
-	for _, ov := range overflow {
-		tableName := ov.table
-		colName := ov.column
-
-		// Resolve partial table name: if "lements" is a suffix of "FitParametricElements",
-		// use the full name. Also handle the case where ov.table is actually the tail of
-		// a table name and ov.column is the column name.
-		if !tableSet[tableName] {
-			resolved := resolvePartialTableName(tableName, knownTables, tableOrdinals, tableMaxOrdinal)
-			if resolved != "" {
-				tableName = resolved
-			}
-		}
-
-		key := struct{ table, column string }{tableName, colName}
-		if _, exists := colMap[key]; exists {
-			continue
-		}
-
-		// Only recover columns for tables already known from the heuristic
-		if !tableSet[tableName] {
-			continue
-		}
-
-		// Determine typeID and maxLen from a column with the same name in another table
-		var typeID uint16
-		var maxLen int
-		if ref, ok := colTypeLookup[colName]; ok {
-			typeID = ref.TypeID
-			maxLen = ref.MaxLength
-		}
-
-		// Find first missing ordinal for this table
-		ordinal := 0
-		ordinals := tableOrdinals[tableName]
-		maxOrd := tableMaxOrdinal[tableName]
-		for o := 1; o <= maxOrd+1; o++ {
-			if !ordinals[o] {
-				ordinal = o
-				break
-			}
-		}
-		if ordinal == 0 {
-			ordinal = maxOrd + 1
-		}
-
-		colMap[key] = &ColumnDef{
-			Name:      colName,
-			TypeID:    typeID,
-			Ordinal:   ordinal,
-			MaxLength: maxLen,
-		}
-
-		if tableOrdinals[tableName] == nil {
-			tableOrdinals[tableName] = make(map[int]bool)
-		}
-		tableOrdinals[tableName][ordinal] = true
-		if ordinal > tableMaxOrdinal[tableName] {
-			tableMaxOrdinal[tableName] = ordinal
-		}
-	}
-}
-
-// inferMissingTypes determines the typeID for columns with typeID=0 by examining
-// the first record on the table's data pages. For each table with exactly one
-// unknown-type column, it calculates total fixed bytes from the first data record
-// and subtracts known fixed bytes to determine the missing column's size.
-func inferMissingTypes(pr *PageReader, totalPages int, colMap map[struct{ table, column string }]*ColumnDef, objectMap map[string][]uint16) {
-	tablesWithUnknown := make(map[string]bool)
-	for k, col := range colMap {
-		if col.TypeID == 0 {
-			tablesWithUnknown[k.table] = true
-		}
-	}
-
-	for tableName := range tablesWithUnknown {
-		objIDs, ok := objectMap[tableName]
-		if !ok || len(objIDs) == 0 {
-			continue
-		}
-
-		var cols []ColumnDef
-		var unknownCount int
-		for k, col := range colMap {
-			if k.table == tableName {
-				cols = append(cols, *col)
-				if col.TypeID == 0 {
-					unknownCount++
-				}
-			}
-		}
-		if unknownCount != 1 {
-			continue
-		}
-
-		// Sum known fixed column sizes
-		knownFixed := 0
-		var knownVarCount int
-		for _, c := range cols {
-			if c.TypeID == 0 {
-				continue
-			}
-			ti := LookupType(c.TypeID)
-			if ti.IsVariable {
-				knownVarCount++
-			} else {
-				knownFixed += ti.FixedSize
-			}
-		}
-
-		// Read the first record to determine total fixed size.
-		// Parse with known-only columns, then see where the variable
-		// section actually starts vs where it would start without the unknown column.
-		totalFixed := measureFixedSize(pr, totalPages, objIDs, cols)
-		if totalFixed <= knownFixed {
-			continue
-		}
-
-		missingBytes := totalFixed - knownFixed
-		typeID := sizeToTypeID(missingBytes)
-		if typeID == 0 {
-			continue
-		}
-
-		for k, col := range colMap {
-			if k.table == tableName && col.TypeID == 0 {
-				col.TypeID = typeID
-				col.MaxLength = missingBytes
-			}
-		}
-	}
-}
-
-// measureFixedSize finds the total fixed column bytes in the first record
-// of a table by scanning for the variable section header pattern.
-func measureFixedSize(pr *PageReader, totalPages int, objectIDs []uint16, cols []ColumnDef) int {
-	idSet := make(map[uint16]bool, len(objectIDs))
-	for _, id := range objectIDs {
-		idSet[id] = true
-	}
-
-	totalCols := len(cols)
-	var knownVarCount int
-	for _, c := range cols {
-		if c.TypeID == 0 {
-			continue
-		}
-		ti := LookupType(c.TypeID)
-		if ti.IsVariable {
-			knownVarCount++
-		}
-	}
-	if knownVarCount == 0 {
-		return 0
-	}
-	// Try assuming the unknown column is fixed (most likely for recovered columns)
-	varHeaderSize := 2*knownVarCount - 1
-
-	for pg := 0; pg < totalPages; pg++ {
-		page, err := pr.ReadPage(pg)
-		if err != nil {
-			continue
-		}
-		pt := ClassifyPage(page)
-		if pt != PageLeaf && pt != PageData {
-			continue
-		}
-		if !idSet[PageObjectID(page)] || page[0x14] == 0 {
-			continue
-		}
-
-		offset := 0x18
-		if offset+9 > len(page) {
-			continue
-		}
-		offset += 4 // status
-		offset += 4 // colCount
-		header := page[offset]
-		offset++
-
-		if header != 0xF0 {
-			nullBmpSize := (totalCols + 7) / 8
-			offset += nullBmpSize
-		}
-
-		fixedStart := offset
-
-		// The variable section starts after all fixed columns.
-		// Its header has the pattern: [flag][endOff][flag][endOff]...[flag]
-		// where flag is 0x80 (data) or 0x00 (null).
-		// Try each possible fixed size and check if the var header pattern matches.
-		for trySize := fixedStart; trySize < fixedStart+200 && trySize+varHeaderSize < len(page); trySize++ {
-			pos := trySize
-			valid := true
-			for vi := 0; vi < knownVarCount; vi++ {
-				flag := page[pos]
-				if flag != 0x80 && flag != 0x00 {
-					valid = false
-					break
-				}
-				pos++
-				if vi < knownVarCount-1 {
-					pos++ // skip cumEnd byte
-				}
-			}
-			if valid && pos-trySize == varHeaderSize {
-				return trySize - fixedStart
-			}
-		}
-	}
-	return 0
-}
-
-// sizeToTypeID maps a fixed column byte size to the most likely SQL CE type.
-func sizeToTypeID(size int) uint16 {
-	switch size {
-	case 1:
-		return TypeBit
-	case 2:
-		return TypeSmallInt
-	case 4:
-		return TypeInt
-	case 8:
-		return TypeFloat // could also be bigint/datetime; float is most common
-	case 16:
-		return TypeUniqueIdentifier
-	default:
-		return 0
-	}
-}
-
-// recoverMissingOrdinals assigns ordinals to columns with Ordinal=0 (from DF__
-// constraint extraction or overflow recovery) by finding gaps in the table's
-// ordinal sequence.
-func recoverMissingOrdinals(colMap map[struct{ table, column string }]*ColumnDef) {
-	// Build per-table ordinal sets
-	tableOrdinals := make(map[string]map[int]bool)
-	tableMaxOrdinal := make(map[string]int)
-	var needsOrdinal []struct{ table, column string }
-
-	for k, col := range colMap {
-		if col.Ordinal == 0 {
-			needsOrdinal = append(needsOrdinal, k)
-			continue
-		}
-		if tableOrdinals[k.table] == nil {
-			tableOrdinals[k.table] = make(map[int]bool)
-		}
-		tableOrdinals[k.table][col.Ordinal] = true
-		if col.Ordinal > tableMaxOrdinal[k.table] {
-			tableMaxOrdinal[k.table] = col.Ordinal
-		}
-	}
-
-	for _, key := range needsOrdinal {
-		ordinals := tableOrdinals[key.table]
-		maxOrd := tableMaxOrdinal[key.table]
-		ordinal := 0
-		for o := 1; o <= maxOrd+1; o++ {
-			if !ordinals[o] {
-				ordinal = o
-				break
-			}
-		}
-		if ordinal == 0 {
-			ordinal = maxOrd + 1
-		}
-		colMap[key].Ordinal = ordinal
-		if tableOrdinals[key.table] == nil {
-			tableOrdinals[key.table] = make(map[int]bool)
-		}
-		tableOrdinals[key.table][ordinal] = true
-		if ordinal > tableMaxOrdinal[key.table] {
-			tableMaxOrdinal[key.table] = ordinal
-		}
-	}
-}
-
-// resolvePartialTableName tries to match a partial table name suffix against
-// known table names. When multiple tables match the suffix, disambiguates
-// by checking which table has an ordinal gap (indicating a missing column).
-func resolvePartialTableName(partial string, knownTables []string, tableOrdinals map[string]map[int]bool, tableMaxOrd map[string]int) string {
-	if len(partial) < 3 {
-		return ""
-	}
-	var matches []string
-	for _, t := range knownTables {
-		if strings.HasSuffix(t, partial) && len(partial) < len(t) {
-			matches = append(matches, t)
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0]
-	}
-	// Disambiguate: prefer the table with an ordinal gap
-	if len(matches) > 1 {
-		for _, t := range matches {
-			ords := tableOrdinals[t]
-			maxOrd := tableMaxOrd[t]
-			for o := 1; o <= maxOrd; o++ {
-				if !ords[o] {
-					return t // has a gap — likely the one missing a column
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// Minimum bytes before a name string needed to read metadata fields.
-const metadataPrefix = 66
-
-func extractColumnRecords(page []byte, colMap map[struct{ table, column string }]*ColumnDef, tableSet map[string]bool, dfColumns *[]struct{ table, column string }) {
-	n := len(page) - 64 // skip tail checksums
-
-	i := 0x20 // skip page header
-	for i < n {
-		b := page[i]
-		if !((b >= 'A' && b <= 'Z') || b == '_') {
-			i++
-			continue
-		}
-
-		// Read first null-terminated string (table name)
-		start1 := i
-		for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
-			i++
-		}
-		if i >= n || page[i] != 0 {
-			i = start1 + 1
-			continue
-		}
-		tableName := string(page[start1:i])
-		i++ // skip null
-
-		// Read second null-terminated string (column name)
-		if i >= n || page[i] < 32 || page[i] >= 127 {
-			continue
-		}
-		start2 := i
-		for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
-			i++
-		}
-		if i >= n || page[i] != 0 {
-			i = start2 + 1
-			continue
-		}
-		colName := string(page[start2:i])
-		i++
-
-		if len(tableName) < 2 || len(colName) < 2 {
-			continue
-		}
-
-		// Filter out non-table entries
-		if isFilteredName(tableName) {
-			continue
-		}
-
-		// DF__ constraint records have 3 strings:
-		//   tableName\x00DF__name\x00columnName\x00
-		// The heuristic read (tableName, DF__name) as a pair. Read the third
-		// string to get the actual column name this constraint applies to.
-		isDefault := false
-		if len(colName) > 4 && colName[:4] == "DF__" {
-			if i < n && page[i] >= 32 && page[i] < 127 {
-				start3 := i
-				for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
-					i++
-				}
-				if i < n && page[i] == 0 {
-					colName = string(page[start3:i])
-					i++
-					isDefault = true
-				}
-			}
-		}
-
-		// Try to read metadata from fixed offsets before the name string
-		le := binary.LittleEndian
-		typeID := uint16(0)
-		ordinal := 0
-		maxLen := 0
-
-		if start1 >= metadataPrefix {
-			typeID = le.Uint16(page[start1-66:])
-			ordinal = int(le.Uint16(page[start1-64:]))
-			maxLen = int(le.Uint16(page[start1-46:]))
-		}
-
-		// For DF__ records: we read the third string (actual column name).
-		// Collect for later processing (after the regular heuristic finishes).
-		if isDefault {
-			if len(colName) >= 2 && !isFilteredName(colName) {
-				*dfColumns = append(*dfColumns, struct{ table, column string }{tableName, colName})
-			}
-			continue
-		}
-
-		// Only accept column records with valid ordinals
-		if ordinal < 1 || ordinal > 500 {
-			continue
-		}
-
-		// Record table
-		tableSet[tableName] = true
-
-		key := struct{ table, column string }{tableName, colName}
-		if _, exists := colMap[key]; !exists {
-			colMap[key] = &ColumnDef{
-				Name:      colName,
-				TypeID:    typeID,
-				Ordinal:   ordinal,
-				MaxLength: maxLen,
-			}
-		}
-	}
-}
-
-func isFilteredName(name string) bool {
-	if len(name) > 4 {
-		prefix := name[:4]
-		if prefix == "PK__" || prefix == "FK__" || prefix == "DF__" || prefix == "UQ__" {
-			return true
-		}
-	}
-	if strings.ContainsRune(name, '/') {
-		return true
-	}
-	if name == "Value" || name == "Case__000000000000092C" {
-		return true
-	}
-	return false
 }
 
 // ScanCatalogNames scans all Leaf pages for table and column name pairs.
@@ -734,6 +413,16 @@ type CatalogEntry struct {
 	ColumnName string
 	PageNum    int
 	Offset     int
+}
+
+func isFilteredName(name string) bool {
+	if len(name) > 4 {
+		p := name[:4]
+		if p == "PK__" || p == "FK__" || p == "DF__" || p == "UQ__" {
+			return true
+		}
+	}
+	return strings.ContainsRune(name, '/')
 }
 
 // ExtractTableNames returns deduplicated table names from catalog entries.
@@ -816,29 +505,6 @@ func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 	return results
 }
 
-const sysObjectsMarker = "__SysObjects\x00"
-const sysObjectsObjIDOffset = 62
-
-func extractObjectMap(pr *PageReader, totalPages int) map[string][]uint16 {
-	parentToLeafIDs := scanLeafPagesByParent(pr, totalPages)
-
-	seen := make(map[string]bool)
-	objectMap := make(map[string][]uint16)
-
-	for pg := 0; pg < totalPages; pg++ {
-		page, err := pr.ReadPage(pg)
-		if err != nil {
-			continue
-		}
-		if ClassifyPage(page) != PageLeaf {
-			continue
-		}
-		extractSysObjectRecords(page, parentToLeafIDs, seen, objectMap)
-	}
-
-	return objectMap
-}
-
 func scanLeafPagesByParent(pr *PageReader, totalPages int) map[uint16][]uint16 {
 	groups := make(map[uint16]map[uint16]bool)
 	for pg := 0; pg < totalPages; pg++ {
@@ -867,34 +533,3 @@ func scanLeafPagesByParent(pr *PageReader, totalPages int) map[uint16][]uint16 {
 	return result
 }
 
-func extractSysObjectRecords(page []byte, parentToLeafIDs map[uint16][]uint16, seen map[string]bool, objectMap map[string][]uint16) {
-	n := len(page) - 16
-
-	for i := 0x20; i < n-len(sysObjectsMarker)-2; i++ {
-		if string(page[i:i+len(sysObjectsMarker)]) != sysObjectsMarker {
-			continue
-		}
-
-		nameStart := i + len(sysObjectsMarker)
-		nameEnd := nameStart
-		for nameEnd < n && page[nameEnd] != 0 && page[nameEnd] >= 32 && page[nameEnd] < 127 {
-			nameEnd++
-		}
-		tableName := string(page[nameStart:nameEnd])
-		if len(tableName) < 2 || seen[tableName] {
-			continue
-		}
-
-		off := i - sysObjectsObjIDOffset
-		if off < 0 || off+2 > len(page) {
-			continue
-		}
-
-		dataObjID := binary.LittleEndian.Uint16(page[off : off+2])
-
-		if leafIDs, ok := parentToLeafIDs[dataObjID]; ok && len(leafIDs) > 0 {
-			seen[tableName] = true
-			objectMap[tableName] = leafIDs
-		}
-	}
-}
