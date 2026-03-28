@@ -138,11 +138,11 @@ func TestSchemaValidation(t *testing.T) {
 	}
 
 	t.Logf("Total column mismatches: %d", totalMismatches)
-	// Known limitation: ~23 columns whose catalog records span Leaf page
-	// boundaries are not yet captured. These are typically the last column
-	// in their table. All type mappings should match (0 type mismatches).
-	if totalMismatches > 25 {
-		t.Errorf("too many mismatches: %d (max 25)", totalMismatches)
+	// Remaining mismatches: ~5 columns on B-tree overflow pages where only
+	// partial names survive, ~5 type=unknown from overflow/DF__ recovery,
+	// 2 smallint/tinyint type mapping differences.
+	if totalMismatches > 15 {
+		t.Errorf("too many mismatches: %d (max 15)", totalMismatches)
 	}
 }
 

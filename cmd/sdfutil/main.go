@@ -9,6 +9,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/jamestjat/sqlce/engine"
+
+	_ "modernc.org/sqlite"
 )
 
 func main() {
@@ -56,22 +59,52 @@ func main() {
 		}
 		cmdDump(os.Args[2], os.Args[3], uint16(objID))
 	case "export":
-		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "usage: sdfutil export <file.sdf> <table> <objectID> [--format csv|json]")
-			os.Exit(1)
-		}
-		objID, err := strconv.Atoi(os.Args[4])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid objectID: %s\n", os.Args[4])
-			os.Exit(1)
-		}
-		format := "csv"
+		outputFormat := "csv"
 		for i, arg := range os.Args {
 			if arg == "--format" && i+1 < len(os.Args) {
-				format = os.Args[i+1]
+				outputFormat = os.Args[i+1]
 			}
 		}
-		cmdExport(os.Args[2], os.Args[3], uint16(objID), format)
+		if outputFormat == "sqlite" {
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "usage: sdfutil export --format sqlite <file.sdf> <output.db>")
+				os.Exit(1)
+			}
+			sdfPath := ""
+			outputPath := ""
+			for _, arg := range os.Args[2:] {
+				if arg == "--format" || arg == "sqlite" {
+					continue
+				}
+				if sdfPath == "" {
+					sdfPath = arg
+				} else if outputPath == "" {
+					outputPath = arg
+				}
+			}
+			if sdfPath == "" || outputPath == "" {
+				fmt.Fprintln(os.Stderr, "usage: sdfutil export --format sqlite <file.sdf> <output.db>")
+				os.Exit(1)
+			}
+			cmdExportSQLite(sdfPath, outputPath)
+		} else {
+			if len(os.Args) < 5 {
+				fmt.Fprintln(os.Stderr, "usage: sdfutil export <file.sdf> <table> <objectID> [--format csv|json]")
+				os.Exit(1)
+			}
+			objID, err := strconv.Atoi(os.Args[4])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid objectID: %s\n", os.Args[4])
+				os.Exit(1)
+			}
+			cmdExport(os.Args[2], os.Args[3], uint16(objID), outputFormat)
+		}
+	case "control-layer":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: sdfutil control-layer <file.sdf>")
+			os.Exit(1)
+		}
+		cmdControlLayer(os.Args[2])
 	default:
 		usage()
 		os.Exit(1)
@@ -82,11 +115,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `sdfutil — SQL CE database file utility
 
 Commands:
-  info   <file.sdf>                          Show database header info
-  tables <file.sdf>                          List all tables
-  schema <file.sdf> <table>                  Show table column schema
-  dump   <file.sdf> <table> <objectID>       Dump rows (tab-separated)
-  export <file.sdf> <table> <objectID>       Export (--format csv|json)`)
+  info   <file.sdf>                                 Show database header info
+  tables <file.sdf>                                 List all tables
+  schema <file.sdf> <table>                         Show table column schema
+  dump   <file.sdf> <table> <objectID>              Dump rows (tab-separated)
+  export <file.sdf> <table> <objectID>              Export (--format csv|json)
+  export --format sqlite <file.sdf> <output.db>     Export all tables to SQLite
+  control-layer <file.sdf>                           Extract control layer as JSON`)
 }
 
 func cmdInfo(path string) {
@@ -260,6 +295,121 @@ func exportJSON(ri *engine.RowIterator) {
 		allRows = append(allRows, row)
 	}
 	enc.Encode(allRows)
+}
+
+func cmdExportSQLite(sdfPath, outputPath string) {
+	db, err := engine.Open(sdfPath)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+
+	os.Remove(outputPath)
+	sqliteDB, err := sql.Open("sqlite", outputPath)
+	if err != nil {
+		fatal(fmt.Errorf("creating SQLite: %w", err))
+	}
+	defer sqliteDB.Close()
+
+	exported := 0
+	skipped := 0
+	totalRows := 0
+
+	for _, name := range db.Tables() {
+		tbl, err := db.Table(name)
+		if err != nil {
+			skipped++
+			continue
+		}
+
+		result, err := tbl.Scan()
+		if err != nil {
+			skipped++
+			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", name, err)
+			continue
+		}
+
+		cols := tbl.Columns()
+		if len(cols) == 0 {
+			skipped++
+			continue
+		}
+
+		createSQL := engine.BuildCreateTable(name, cols)
+		if _, err := sqliteDB.Exec(createSQL); err != nil {
+			fmt.Fprintf(os.Stderr, "  skip %s: create table: %v\n", name, err)
+			skipped++
+			continue
+		}
+
+		if len(result.Rows) == 0 {
+			exported++
+			continue
+		}
+
+		placeholders := make([]string, len(cols))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		insertSQL := fmt.Sprintf(`INSERT INTO "%s" VALUES (%s)`, name, strings.Join(placeholders, ","))
+
+		tx, err := sqliteDB.Begin()
+		if err != nil {
+			skipped++
+			continue
+		}
+
+		insertStmt, err := tx.Prepare(insertSQL)
+		if err != nil {
+			tx.Rollback()
+			fmt.Fprintf(os.Stderr, "  skip %s: prepare: %v\n", name, err)
+			skipped++
+			continue
+		}
+
+		for _, row := range result.Rows {
+			args := make([]any, len(cols))
+			for i := range cols {
+				if i < len(row) {
+					args[i] = row[i]
+				}
+			}
+			insertStmt.Exec(args...)
+		}
+
+		insertStmt.Close()
+		tx.Commit()
+
+		totalRows += len(result.Rows)
+		exported++
+		fmt.Fprintf(os.Stderr, "  %s: %d rows\n", name, len(result.Rows))
+	}
+
+	fmt.Fprintf(os.Stderr, "\nExported %d tables (%d rows), skipped %d\n", exported, totalRows, skipped)
+}
+
+func cmdControlLayer(sdfPath string) {
+	db, err := engine.Open(sdfPath)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+
+	result, err := engine.ExtractControlLayer(db)
+	if err != nil {
+		fatal(err)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(result); err != nil {
+		fatal(err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Q1: %d, Q2: %d, Q3: %d, Q4: %d, Q5: %d, Q6: %d, Q7: %d, Q8: %d\n",
+		len(result.ControlMatrix), len(result.CVRoleConstraints), len(result.EconomicFunctions),
+		len(result.VariableTransforms), len(result.ModelMetadata), len(result.ExecutionSequence),
+		len(result.UserParameters), len(result.LoopDetails))
 }
 
 func fatal(err error) {

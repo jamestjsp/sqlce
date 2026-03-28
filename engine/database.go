@@ -17,15 +17,15 @@ type Database struct {
 	reader     *format.PageReader
 	catalog    *format.Catalog
 	totalPages int
-	objMapping map[string]uint16 // table name → objectID (best effort)
+	objMapping map[string][]uint16 // table name → objectIDs (best effort)
 	closed     bool
 }
 
 // Table provides access to a single table's metadata and data.
 type Table struct {
-	db    *Database
-	def   *format.TableDef
-	objID uint16
+	db     *Database
+	def    *format.TableDef
+	objIDs []uint16
 }
 
 // Open opens a SQL CE database file (.sdf) for reading.
@@ -66,6 +66,7 @@ func openFromFile(f *os.File) (*Database, error) {
 		reader:     pr,
 		catalog:    catalog,
 		totalPages: totalPages,
+		objMapping: catalog.ObjectMap,
 	}
 
 	return db, nil
@@ -112,15 +113,15 @@ func (db *Database) Table(name string) (*Table, error) {
 		return nil, fmt.Errorf("table %q not found", name)
 	}
 
-	objID := uint16(0)
+	var objIDs []uint16
 	if db.objMapping != nil {
-		objID = db.objMapping[name]
+		objIDs = db.objMapping[name]
 	}
 
 	return &Table{
-		db:    db,
-		def:   td,
-		objID: objID,
+		db:     db,
+		def:    td,
+		objIDs: objIDs,
 	}, nil
 }
 
@@ -152,8 +153,14 @@ func (db *Database) BuildObjectMapping(expectedRowCounts map[string]int) error {
 		return fmt.Errorf("collecting objectID info: %w", err)
 	}
 
+	single := BuildTableMapping(db.catalog, objInfos, expectedRowCounts)
+	multi := make(map[string][]uint16, len(single))
+	for name, id := range single {
+		multi[name] = []uint16{id}
+	}
+
 	db.mu.Lock()
-	db.objMapping = BuildTableMapping(db.catalog, objInfos, expectedRowCounts)
+	db.objMapping = multi
 	db.mu.Unlock()
 
 	return nil
@@ -161,8 +168,12 @@ func (db *Database) BuildObjectMapping(expectedRowCounts map[string]int) error {
 
 // SetObjectMapping directly sets the table-to-objectID mapping.
 func (db *Database) SetObjectMapping(m map[string]uint16) {
+	multi := make(map[string][]uint16, len(m))
+	for name, id := range m {
+		multi[name] = []uint16{id}
+	}
 	db.mu.Lock()
-	db.objMapping = m
+	db.objMapping = multi
 	db.mu.Unlock()
 }
 
@@ -184,17 +195,17 @@ func (t *Table) ColumnCount() int {
 // Scan reads all rows from the table. Requires the table's objectID to be
 // known (via BuildObjectMapping or SetObjectMapping on the database).
 func (t *Table) Scan() (*ScanResult, error) {
-	if t.objID == 0 {
-		return nil, fmt.Errorf("objectID unknown for table %q; call BuildObjectMapping first", t.def.Name)
+	if len(t.objIDs) == 0 {
+		return nil, fmt.Errorf("objectID unknown for table %q; use ScanWithObjectID or WITH OBJECTID in SQL", t.def.Name)
 	}
 
-	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, t.objID)
+	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, t.objIDs)
 	return scanner.Scan()
 }
 
 // ScanWithObjectID reads all rows using the specified objectID.
 func (t *Table) ScanWithObjectID(objectID uint16) (*ScanResult, error) {
-	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, objectID)
+	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, []uint16{objectID})
 	return scanner.Scan()
 }
 
