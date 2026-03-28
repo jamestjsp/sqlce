@@ -23,7 +23,7 @@ func TestTypeMappingKnownTypes(t *testing.T) {
 		{TypeDatetime, "datetime", 8, false},
 		{TypeDatetime, "datetime", 8, false},
 		{TypeMoney, "money", 8, false},
-		{TypeBit, "bit", 1, false},
+		{TypeBit, "bit", 0, false},
 		{TypeNChar, "nchar", 0, true},
 		{TypeNVarchar, "nvarchar", 0, true},
 		{TypeVarBinary, "varbinary", 0, true},

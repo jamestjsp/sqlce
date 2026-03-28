@@ -34,7 +34,7 @@ func NewTableScanner(pr *format.PageReader, totalPages int, table *format.TableD
 
 // Scan reads all rows from the table's Leaf pages and returns typed values.
 func (ts *TableScanner) Scan() (*ScanResult, error) {
-	records, err := format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns)
+	records, err := format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, ts.table.NullBmpExtra)
 	if err != nil {
 		return nil, fmt.Errorf("scanning table %s: %w", ts.table.Name, err)
 	}
@@ -108,7 +108,7 @@ func FindTableObjectIDs(pr *format.PageReader, totalPages int) (map[uint16]int, 
 // or by testing column parsing against candidate objectIDs.
 func MatchTableToObjectID(pr *format.PageReader, totalPages int, table *format.TableDef, candidates map[uint16]int) (uint16, error) {
 	for objID := range candidates {
-		records, err := format.ScanTableRecords(pr, totalPages, objID, table.Columns)
+		records, err := format.ScanTableRecords(pr, totalPages, objID, table.Columns, table.NullBmpExtra)
 		if err != nil || len(records) == 0 {
 			continue
 		}

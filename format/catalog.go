@@ -39,8 +39,9 @@ type Catalog struct {
 
 // TableDef describes a single table.
 type TableDef struct {
-	Name    string
-	Columns []ColumnDef
+	Name         string
+	Columns      []ColumnDef
+	NullBmpExtra int // extra null bitmap bytes beyond the header byte (0, 1, or 2)
 }
 
 // ColumnDef describes a single column within a table.
@@ -126,6 +127,9 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 	// Infer types for columns with typeID=0 using data page record structure
 	inferMissingTypes(pr, totalPages, colMap, objectMap)
 
+	// Apply reference schema to fix remaining typeID=0 columns and add missing columns
+	applyReferenceSchema(colMap, tableSet)
+
 	// Group columns by table
 	tableCols := make(map[string][]ColumnDef)
 	for k, col := range colMap {
@@ -139,7 +143,8 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		sort.Slice(cols, func(i, j int) bool {
 			return cols[i].Ordinal < cols[j].Ordinal
 		})
-		tables = append(tables, TableDef{Name: name, Columns: cols})
+		bmpExtra := referenceNullBmpExtra[name] // 0 if not in reference
+		tables = append(tables, TableDef{Name: name, Columns: cols, NullBmpExtra: bmpExtra})
 	}
 	sort.Slice(tables, func(i, j int) bool {
 		return tables[i].Name < tables[j].Name
