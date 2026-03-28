@@ -121,6 +121,11 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 	// Assign ordinals to any columns still missing them
 	recoverMissingOrdinals(colMap)
 
+	objectMap := extractObjectMap(pr, totalPages)
+
+	// Infer types for columns with typeID=0 using data page record structure
+	inferMissingTypes(pr, totalPages, colMap, objectMap)
+
 	// Group columns by table
 	tableCols := make(map[string][]ColumnDef)
 	for k, col := range colMap {
@@ -139,8 +144,6 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 	sort.Slice(tables, func(i, j int) bool {
 		return tables[i].Name < tables[j].Name
 	})
-
-	objectMap := extractObjectMap(pr, totalPages)
 
 	return &Catalog{Tables: tables, ObjectMap: objectMap}, nil
 }
@@ -299,6 +302,174 @@ func recoverOverflowRecords(colMap map[struct{ table, column string }]*ColumnDef
 		if ordinal > tableMaxOrdinal[tableName] {
 			tableMaxOrdinal[tableName] = ordinal
 		}
+	}
+}
+
+// inferMissingTypes determines the typeID for columns with typeID=0 by examining
+// the first record on the table's data pages. For each table with exactly one
+// unknown-type column, it calculates total fixed bytes from the first data record
+// and subtracts known fixed bytes to determine the missing column's size.
+func inferMissingTypes(pr *PageReader, totalPages int, colMap map[struct{ table, column string }]*ColumnDef, objectMap map[string][]uint16) {
+	tablesWithUnknown := make(map[string]bool)
+	for k, col := range colMap {
+		if col.TypeID == 0 {
+			tablesWithUnknown[k.table] = true
+		}
+	}
+
+	for tableName := range tablesWithUnknown {
+		objIDs, ok := objectMap[tableName]
+		if !ok || len(objIDs) == 0 {
+			continue
+		}
+
+		var cols []ColumnDef
+		var unknownCount int
+		for k, col := range colMap {
+			if k.table == tableName {
+				cols = append(cols, *col)
+				if col.TypeID == 0 {
+					unknownCount++
+				}
+			}
+		}
+		if unknownCount != 1 {
+			continue
+		}
+
+		// Sum known fixed column sizes
+		knownFixed := 0
+		var knownVarCount int
+		for _, c := range cols {
+			if c.TypeID == 0 {
+				continue
+			}
+			ti := LookupType(c.TypeID)
+			if ti.IsVariable {
+				knownVarCount++
+			} else {
+				knownFixed += ti.FixedSize
+			}
+		}
+
+		// Read the first record to determine total fixed size.
+		// Parse with known-only columns, then see where the variable
+		// section actually starts vs where it would start without the unknown column.
+		totalFixed := measureFixedSize(pr, totalPages, objIDs, cols)
+		if totalFixed <= knownFixed {
+			continue
+		}
+
+		missingBytes := totalFixed - knownFixed
+		typeID := sizeToTypeID(missingBytes)
+		if typeID == 0 {
+			continue
+		}
+
+		for k, col := range colMap {
+			if k.table == tableName && col.TypeID == 0 {
+				col.TypeID = typeID
+				col.MaxLength = missingBytes
+			}
+		}
+	}
+}
+
+// measureFixedSize finds the total fixed column bytes in the first record
+// of a table by scanning for the variable section header pattern.
+func measureFixedSize(pr *PageReader, totalPages int, objectIDs []uint16, cols []ColumnDef) int {
+	idSet := make(map[uint16]bool, len(objectIDs))
+	for _, id := range objectIDs {
+		idSet[id] = true
+	}
+
+	totalCols := len(cols)
+	var knownVarCount int
+	for _, c := range cols {
+		if c.TypeID == 0 {
+			continue
+		}
+		ti := LookupType(c.TypeID)
+		if ti.IsVariable {
+			knownVarCount++
+		}
+	}
+	if knownVarCount == 0 {
+		return 0
+	}
+	// Try assuming the unknown column is fixed (most likely for recovered columns)
+	varHeaderSize := 2*knownVarCount - 1
+
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			continue
+		}
+		pt := ClassifyPage(page)
+		if pt != PageLeaf && pt != PageData {
+			continue
+		}
+		if !idSet[PageObjectID(page)] || page[0x14] == 0 {
+			continue
+		}
+
+		offset := 0x18
+		if offset+9 > len(page) {
+			continue
+		}
+		offset += 4 // status
+		offset += 4 // colCount
+		header := page[offset]
+		offset++
+
+		if header != 0xF0 {
+			nullBmpSize := (totalCols + 7) / 8
+			offset += nullBmpSize
+		}
+
+		fixedStart := offset
+
+		// The variable section starts after all fixed columns.
+		// Its header has the pattern: [flag][endOff][flag][endOff]...[flag]
+		// where flag is 0x80 (data) or 0x00 (null).
+		// Try each possible fixed size and check if the var header pattern matches.
+		for trySize := fixedStart; trySize < fixedStart+200 && trySize+varHeaderSize < len(page); trySize++ {
+			pos := trySize
+			valid := true
+			for vi := 0; vi < knownVarCount; vi++ {
+				flag := page[pos]
+				if flag != 0x80 && flag != 0x00 {
+					valid = false
+					break
+				}
+				pos++
+				if vi < knownVarCount-1 {
+					pos++ // skip cumEnd byte
+				}
+			}
+			if valid && pos-trySize == varHeaderSize {
+				return trySize - fixedStart
+			}
+		}
+	}
+	return 0
+}
+
+// sizeToTypeID maps a fixed column byte size to the most likely SQL CE type.
+func sizeToTypeID(size int) uint16 {
+	switch size {
+	case 1:
+		return TypeBit
+	case 2:
+		return TypeSmallInt
+	case 4:
+		return TypeInt
+	case 8:
+		return TypeFloat // could also be bigint/datetime; float is most common
+	case 16:
+		return TypeUniqueIdentifier
+	default:
+		return 0
 	}
 }
 
