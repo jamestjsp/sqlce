@@ -4,7 +4,7 @@
 //
 //	import (
 //	    "database/sql"
-//	    _ "github.com/josephjohnjj/sqlce/driver"
+//	    _ "github.com/jamestjat/sqlce/driver"
 //	)
 //
 //	db, err := sql.Open("sqlce", "path/to/database.sdf")

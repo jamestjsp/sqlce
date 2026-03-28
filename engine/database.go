@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/josephjohnjj/sqlce/format"
+	"github.com/jamestjat/sqlce/format"
 )
 
 // Database represents an opened SQL CE database file.

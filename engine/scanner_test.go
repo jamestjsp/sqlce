@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/josephjohnjj/sqlce/engine"
-	"github.com/josephjohnjj/sqlce/format"
+	"github.com/jamestjat/sqlce/engine"
+	"github.com/jamestjat/sqlce/format"
 )
 
 func openSDF(t *testing.T) (*format.PageReader, int) {

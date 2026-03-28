@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/josephjohnjj/sqlce/engine"
+	"github.com/jamestjat/sqlce/engine"
 )
 
 func TestSchemaIntrospection(t *testing.T) {

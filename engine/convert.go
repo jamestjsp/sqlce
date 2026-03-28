@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/josephjohnjj/sqlce/format"
+	"github.com/jamestjat/sqlce/format"
 )
 
 // ParseGUID converts 16 bytes in SQL Server mixed-endian format to a standard

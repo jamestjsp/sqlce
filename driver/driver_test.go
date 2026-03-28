@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "github.com/josephjohnjj/sqlce/driver"
+	_ "github.com/jamestjat/sqlce/driver"
 )
 
 func TestSQLDriverOpen(t *testing.T) {
