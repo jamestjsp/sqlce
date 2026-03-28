@@ -67,7 +67,7 @@ var typeRegistry = map[uint16]TypeInfo{
 	TypeFloat:            {TypeFloat, "float", typeFloat64, 8, false},
 	TypeReal:             {TypeReal, "real", typeFloat32, 4, false},
 	TypeMoney:            {TypeMoney, "money", typeInt64, 8, false},
-	TypeBit:              {TypeBit, "bit", typeBool, 1, false},
+	TypeBit:              {TypeBit, "bit", typeBool, 0, false},
 	TypeNVarchar:         {TypeNVarchar, "nvarchar", typeString, 0, true},
 	TypeNChar:            {TypeNChar, "nchar", typeString, 0, true},
 	TypeDatetime:         {TypeDatetime, "datetime", typeTime, 8, false},

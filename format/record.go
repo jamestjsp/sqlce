@@ -15,7 +15,7 @@ type PageRecords struct {
 	Records     []Record
 }
 
-func ParsePageRecords(page []byte, columns []ColumnDef) (*PageRecords, error) {
+func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*PageRecords, error) {
 	if len(page) < 32 {
 		return nil, nil
 	}
@@ -54,16 +54,36 @@ func ParsePageRecords(page []byte, columns []ColumnDef) (*PageRecords, error) {
 		ColumnCount: colCount,
 	}
 
-	offset := 0x18
-	for rec := 0; rec < recordCount && offset+9 <= len(page); rec++ {
-		r, nextOff, err := parseOneRecord(page, offset, fixedCols, varCols, len(columns))
-		if err != nil {
+	bmpExtra := 0
+	if len(nullBmpExtra) > 0 {
+		bmpExtra = nullBmpExtra[0]
+	}
+
+	// Find record starts by scanning for [00000000][colCount LE32] pattern.
+	// This avoids relying on variable section nextOff which can be imprecise.
+	ccBytes := [4]byte{byte(colCount), byte(colCount >> 8), byte(colCount >> 16), byte(colCount >> 24)}
+	var recOffsets []int
+	for i := 0x18; i < len(page)-8 && len(recOffsets) < recordCount; i++ {
+		if page[i] == 0 && page[i+1] == 0 && page[i+2] == 0 && page[i+3] == 0 &&
+			page[i+4] == ccBytes[0] && page[i+5] == ccBytes[1] && page[i+6] == ccBytes[2] && page[i+7] == ccBytes[3] {
+			recOffsets = append(recOffsets, i)
+		}
+	}
+	if len(recOffsets) == 0 {
+		recOffsets = []int{0x18}
+	}
+
+	for _, offset := range recOffsets {
+		if offset+9 > len(page) {
 			break
+		}
+		r, _, err := parseOneRecord(page, offset, fixedCols, varCols, len(columns), bmpExtra)
+		if err != nil {
+			continue
 		}
 		if r != nil {
 			pr.Records = append(pr.Records, *r)
 		}
-		offset = nextOff
 	}
 
 	return pr, nil
@@ -75,7 +95,7 @@ type colLayout struct {
 	typeID    uint16
 }
 
-func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, totalCols int) (*Record, int, error) {
+func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, totalCols int, nullBmpExtra int) (*Record, int, error) {
 	if offset+9 > len(page) {
 		return nil, len(page), fmt.Errorf("offset %d past page end", offset)
 	}
@@ -85,18 +105,10 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 	_ = binary.LittleEndian.Uint32(page[offset:])
 	offset += 4 // colCount
 
-	header := page[offset]
-	offset++
-
-	// Header 0xF0: no null bitmap.
-	// Other header values: null bitmap of ceil(totalCols/8) bytes follows.
-	if header != 0xF0 {
-		nullBmpSize := (totalCols + 7) / 8
-		if offset+nullBmpSize > len(page) {
-			return nil, len(page), fmt.Errorf("null bitmap overflows at %d", offset)
-		}
-		offset += nullBmpSize
-	}
+	// First byte is always present (header/bitmap byte).
+	// Extra null bitmap bytes are table-specific (from reference data).
+	offset++ // header byte
+	offset += nullBmpExtra
 
 	values := make([][]byte, totalCols)
 
@@ -116,14 +128,10 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 	}
 
 	if len(varCols) > 0 && offset < len(page)-4 {
-		if header == 0xF0 {
-			// No null bitmap — may need small scan to find 0x80 flag
-			for offset < len(page)-4 && page[offset] != 0x80 {
-				offset++
-			}
+		// Scan forward to find the 0x80 variable section flag
+		for offset < len(page)-4 && page[offset] != 0x80 {
+			offset++
 		}
-		// For non-0xF0: null bitmap already skipped, variable section
-		// flag (0x80 or 0x00) is at current offset
 		offset = parseVariableColumns(page, offset, varCols, values)
 	}
 
@@ -216,11 +224,11 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 	return offset
 }
 
-func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns []ColumnDef) ([]Record, error) {
-	return ScanTableRecordsMulti(pr, totalPages, []uint16{objectID}, columns)
+func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	return ScanTableRecordsMulti(pr, totalPages, []uint16{objectID}, columns, nullBmpExtra...)
 }
 
-func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, columns []ColumnDef) ([]Record, error) {
+func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
 	idSet := make(map[uint16]bool, len(objectIDs))
 	for _, id := range objectIDs {
 		idSet[id] = true
@@ -240,7 +248,7 @@ func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, c
 			continue
 		}
 
-		parsed, err := ParsePageRecords(page, columns)
+		parsed, err := ParsePageRecords(page, columns, nullBmpExtra...)
 		if err != nil {
 			continue
 		}

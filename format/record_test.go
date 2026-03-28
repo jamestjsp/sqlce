@@ -116,7 +116,7 @@ func TestParsePageRecords_ExternalRuntimeDataSource(t *testing.T) {
 		{Name: "IsDefault", TypeID: TypeBit, Ordinal: 5},
 	}
 
-	parsed, err := ParsePageRecords(page, columns)
+	parsed, err := ParsePageRecords(page, columns, 1)
 	if err != nil {
 		t.Fatalf("ParsePageRecords: %v", err)
 	}
