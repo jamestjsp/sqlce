@@ -31,7 +31,8 @@ func TestParsePageRecords_DataArrayTypes(t *testing.T) {
 		{Name: "Unit", TypeID: TypeNVarchar, Ordinal: 4, MaxLength: 100},
 	}
 
-	parsed, err := ParsePageRecords(page, columns)
+	bmpExtra := computeNullBmpExtra(columns)
+	parsed, err := ParsePageRecords(page, columns, bmpExtra)
 	if err != nil {
 		t.Fatalf("ParsePageRecords: %v", err)
 	}
@@ -172,7 +173,8 @@ func TestParsePageRecords_Properties(t *testing.T) {
 		{Name: "Value", TypeID: TypeNVarchar, Ordinal: 2, MaxLength: 512},
 	}
 
-	parsed, err := ParsePageRecords(page, columns)
+	bmpExtra := computeNullBmpExtra(columns)
+	parsed, err := ParsePageRecords(page, columns, bmpExtra)
 	if err != nil {
 		t.Fatalf("ParsePageRecords: %v", err)
 	}
@@ -221,18 +223,19 @@ func TestParsePageRecords_BlcModel(t *testing.T) {
 	}
 
 	columns := []ColumnDef{
-		{Name: "BlcModelIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 1},
-		{Name: "RelationIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 2},
-		{Name: "LoopIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 3},
-		{Name: "ItemSequenceIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 4},
-		{Name: "Representation", TypeID: TypeNVarchar, Ordinal: 5, MaxLength: 100},
-		{Name: "IntendedMV", TypeID: TypeNVarchar, Ordinal: 6, MaxLength: 100},
-		{Name: "IntendedModelLoopType", TypeID: TypeNVarchar, Ordinal: 7, MaxLength: 100},
-		{Name: "Status", TypeID: TypeNVarchar, Ordinal: 8, MaxLength: 100},
-		{Name: "BlcModelBlockId", TypeID: TypeUniqueIdentifier, Ordinal: 9},
+		{Name: "BlcModelIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 1, Position: 0},
+		{Name: "RelationIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 2, Position: 16},
+		{Name: "LoopIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 3, Position: 32},
+		{Name: "ItemSequenceIdentifier", TypeID: TypeUniqueIdentifier, Ordinal: 4, Position: 48},
+		{Name: "Representation", TypeID: TypeNVarchar, Ordinal: 5, MaxLength: 100, Position: 0},
+		{Name: "IntendedMV", TypeID: TypeNVarchar, Ordinal: 6, MaxLength: 100, Position: 1},
+		{Name: "IntendedModelLoopType", TypeID: TypeNVarchar, Ordinal: 7, MaxLength: 100, Position: 2},
+		{Name: "Status", TypeID: TypeNVarchar, Ordinal: 8, MaxLength: 100, Position: 3},
+		{Name: "BlcModelBlockId", TypeID: TypeUniqueIdentifier, Ordinal: 9, Position: 64},
 	}
 
-	parsed, err := ParsePageRecords(page, columns)
+	bmpExtra := computeNullBmpExtra(columns)
+	parsed, err := ParsePageRecords(page, columns, bmpExtra)
 	if err != nil {
 		t.Fatalf("ParsePageRecords: %v", err)
 	}

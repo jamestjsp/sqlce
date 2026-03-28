@@ -3,6 +3,7 @@ package format
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 )
 
 type Record struct {
@@ -37,13 +38,16 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 	for i, c := range columns {
 		ti := LookupType(c.TypeID)
 		if c.TypeID == TypeBit {
-			bitCols = append(bitCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
+			bitCols = append(bitCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID, position: c.Position})
 		} else if ti.IsVariable {
-			varCols = append(varCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
+			varCols = append(varCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID, position: c.Position})
 		} else {
-			fixedCols = append(fixedCols, colLayout{schemaIdx: i, size: ti.FixedSize, typeID: c.TypeID})
+			fixedCols = append(fixedCols, colLayout{schemaIdx: i, size: ti.FixedSize, typeID: c.TypeID, position: c.Position})
 		}
 	}
+	sort.SliceStable(fixedCols, func(i, j int) bool { return fixedCols[i].position < fixedCols[j].position })
+	sort.SliceStable(varCols, func(i, j int) bool { return varCols[i].position < varCols[j].position })
+	sort.SliceStable(bitCols, func(i, j int) bool { return bitCols[i].position < bitCols[j].position })
 
 	pr := &PageRecords{
 		ObjectID:    objID,
@@ -88,6 +92,7 @@ type colLayout struct {
 	schemaIdx int
 	size      int
 	typeID    uint16
+	position  int
 }
 
 func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLayout, totalCols int, nullBmpExtra int) (*Record, int, error) {
@@ -140,10 +145,7 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLa
 	}
 
 	if len(varCols) > 0 && offset < len(page)-4 {
-		// Scan forward to find the 0x80 variable section flag
-		for offset < len(page)-4 && page[offset] != 0x80 {
-			offset++
-		}
+		offset++ // skip 1-byte separator between fixed data and variable section
 		offset = parseVariableColumns(page, offset, varCols, values)
 	}
 
