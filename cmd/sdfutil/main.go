@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/jamestjat/sqlce/engine"
-	"github.com/jamestjat/sqlce/format"
 
 	_ "modernc.org/sqlite"
 )
@@ -336,7 +335,7 @@ func cmdExportSQLite(sdfPath, outputPath string) {
 			continue
 		}
 
-		createSQL := buildCreateTable(name, cols)
+		createSQL := engine.BuildCreateTable(name, cols)
 		if _, err := sqliteDB.Exec(createSQL); err != nil {
 			fmt.Fprintf(os.Stderr, "  skip %s: create table: %v\n", name, err)
 			skipped++
@@ -387,34 +386,6 @@ func cmdExportSQLite(sdfPath, outputPath string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\nExported %d tables (%d rows), skipped %d\n", exported, totalRows, skipped)
-}
-
-func buildCreateTable(name string, cols []format.ColumnDef) string {
-	var parts []string
-	for _, col := range cols {
-		sqlType := ceTypeToSQLite(col.TypeID)
-		parts = append(parts, fmt.Sprintf(`"%s" %s`, col.Name, sqlType))
-	}
-	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (%s)`, name, strings.Join(parts, ", "))
-}
-
-func ceTypeToSQLite(typeID uint16) string {
-	switch typeID {
-	case format.TypeTinyInt, format.TypeSmallInt, format.TypeInt, format.TypeBigInt, format.TypeBit:
-		return "INTEGER"
-	case format.TypeFloat, format.TypeReal:
-		return "REAL"
-	case format.TypeMoney, format.TypeNumeric:
-		return "NUMERIC"
-	case format.TypeNVarchar, format.TypeNChar, format.TypeNText, format.TypeUniqueIdentifier:
-		return "TEXT"
-	case format.TypeDatetime:
-		return "TEXT"
-	case format.TypeImage, format.TypeBinary, format.TypeVarBinary, format.TypeRowVersion:
-		return "BLOB"
-	default:
-		return "TEXT"
-	}
 }
 
 func cmdControlLayer(sdfPath string) {
