@@ -3,60 +3,201 @@ package format
 // Catalog Format Notes (Spike Findings)
 //
 // SQL CE stores metadata in system tables (__SysObjects, __SysColumns, etc.)
-// that are themselves stored in Leaf pages (type 0x40).
+// within Leaf pages (type 0x40).
 //
-// Binary Layout Observations:
+// Binary layout of a column catalog record:
 //
-//   Page Header (bytes 0x00-0x1F):
-//     0x00-0x03: Page checksum/hash (4 bytes, varies per page)
-//     0x04-0x05: Object ID (u16 LE) — identifies which table owns this page
-//     0x06:      Page type byte (0x40 for Leaf, 0x30 for Data, etc.)
-//     0x07:      Always 0x00
-//     0x08-0x0B: Unknown (u32 LE) — possibly next page pointer
-//     0x0C-0x0F: Reserved (zeros)
-//     0x10-0x13: Unknown (u32 LE) — e.g. 0x0403 on catalog pages
-//     0x14-0x17: Flags/pointers
-//     0x18-0x1B: Padding or reserved
-//     0x1C-0x1F: Record count or variable (e.g. "Value" string on pages 1-2)
+//   Each record has a ~85-byte fixed header followed by two null-terminated
+//   ASCII strings (table name, column/object name). Key fields are at fixed
+//   offsets relative to the start of the name string:
 //
-//   Record Area (bytes 0x20 onward):
-//     Records are variable-length, containing:
-//     - Fixed header (~85 bytes) starting with marker bytes (often 80 1F 40 FF FF)
-//     - Table name as null-terminated ASCII string
-//     - Column/object name as null-terminated ASCII string
-//     - Padding to alignment boundary
+//     name_offset - 66: u16 LE = Type ID (SQL CE internal type number)
+//     name_offset - 64: u16 LE = Ordinal position (1-based column index)
+//     name_offset - 46: u16 LE = Max length in bytes
 //
-//   Page Tail:
-//     Last ~64 bytes may contain hash/checksum data (not a simple slot array)
-//
-//   Key Pages:
-//     Pages 1-2: Root catalog pages (contain "Value" at offset 0x1C)
-//     Pages 3-5+: Catalog data pages with table definitions
-//     System object IDs: 0x0001 (AllocationMap), 0x0002 (SpaceMap), 0x0403+ (user objects)
-//
-//   System Tables:
-//     __SysObjects — table definitions (found extensively in Leaf pages)
-//     __SysColumns — column definitions
-//     __SysIndexes — index definitions
-//     __SysConstraints — constraint definitions
+//   Type ID mapping (discovered from sample data):
+//     0x02 = smallint (2 bytes)
+//     0x03 = int (4 bytes)
+//     0x05 = float/real (4 bytes)
+//     0x06 = float/double (8 bytes)
+//     0x07 = datetime
+//     0x0B = bit
+//     0x1F = nvarchar (variable length, UTF-16)
+//     0x65 = uniqueidentifier (16-byte GUID)
 
 import (
-	"bytes"
+	"encoding/binary"
+	"sort"
+	"strings"
 )
 
-// CatalogEntry represents a table/column name pair found in catalog pages.
-type CatalogEntry struct {
-	TableName  string
-	ColumnName string
-	PageNum    int
-	Offset     int
+// Catalog holds the parsed schema metadata for all tables in the database.
+type Catalog struct {
+	Tables []TableDef
 }
 
-// ScanCatalogNames scans all Leaf pages in the database for table and column
-// name pairs. This is a brute-force approach based on spike analysis; it finds
-// null-terminated ASCII string pairs in Leaf (0x40) page record areas.
-//
-// Returns deduplicated entries keyed by (TableName, ColumnName).
+// TableDef describes a single table.
+type TableDef struct {
+	Name    string
+	Columns []ColumnDef
+}
+
+// ColumnDef describes a single column within a table.
+type ColumnDef struct {
+	Name      string
+	TypeID    uint16
+	Ordinal   int // 1-based position
+	MaxLength int // in bytes
+}
+
+// TableByName returns the table definition for the given name, or nil.
+func (c *Catalog) TableByName(name string) *TableDef {
+	for i := range c.Tables {
+		if c.Tables[i].Name == name {
+			return &c.Tables[i]
+		}
+	}
+	return nil
+}
+
+// ReadCatalog scans the database and builds a Catalog of table/column definitions.
+func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
+	colMap := make(map[struct{ table, column string }]*ColumnDef)
+	tableSet := make(map[string]bool)
+
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			return nil, err
+		}
+		if ClassifyPage(page) != PageLeaf {
+			continue
+		}
+		extractColumnRecords(page, colMap, tableSet)
+	}
+
+	// Group columns by table
+	tableCols := make(map[string][]ColumnDef)
+	for k, col := range colMap {
+		tableCols[k.table] = append(tableCols[k.table], *col)
+	}
+
+	// Build sorted table list
+	var tables []TableDef
+	for name := range tableSet {
+		cols := tableCols[name]
+		sort.Slice(cols, func(i, j int) bool {
+			return cols[i].Ordinal < cols[j].Ordinal
+		})
+		tables = append(tables, TableDef{Name: name, Columns: cols})
+	}
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i].Name < tables[j].Name
+	})
+
+	return &Catalog{Tables: tables}, nil
+}
+
+// Minimum bytes before a name string needed to read metadata fields.
+const metadataPrefix = 66
+
+func extractColumnRecords(page []byte, colMap map[struct{ table, column string }]*ColumnDef, tableSet map[string]bool) {
+	n := len(page) - 64 // skip tail checksums
+
+	i := 0x20 // skip page header
+	for i < n {
+		b := page[i]
+		if !((b >= 'A' && b <= 'Z') || b == '_') {
+			i++
+			continue
+		}
+
+		// Read first null-terminated string (table name)
+		start1 := i
+		for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
+			i++
+		}
+		if i >= n || page[i] != 0 {
+			i = start1 + 1
+			continue
+		}
+		tableName := string(page[start1:i])
+		i++ // skip null
+
+		// Read second null-terminated string (column name)
+		if i >= n || page[i] < 32 || page[i] >= 127 {
+			continue
+		}
+		start2 := i
+		for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
+			i++
+		}
+		if i >= n || page[i] != 0 {
+			i = start2 + 1
+			continue
+		}
+		colName := string(page[start2:i])
+		i++
+
+		if len(tableName) < 2 || len(colName) < 2 {
+			continue
+		}
+
+		// Filter out non-table entries
+		if isFilteredName(tableName) {
+			continue
+		}
+
+		// Try to read metadata from fixed offsets before the name string
+		le := binary.LittleEndian
+		typeID := uint16(0)
+		ordinal := 0
+		maxLen := 0
+
+		if start1 >= metadataPrefix {
+			typeID = le.Uint16(page[start1-66:])
+			ordinal = int(le.Uint16(page[start1-64:]))
+			maxLen = int(le.Uint16(page[start1-46:]))
+		}
+
+		// Only accept column records with valid ordinals
+		if ordinal < 1 || ordinal > 500 {
+			continue
+		}
+
+		// Record table
+		tableSet[tableName] = true
+
+		key := struct{ table, column string }{tableName, colName}
+		if _, exists := colMap[key]; !exists {
+			colMap[key] = &ColumnDef{
+				Name:      colName,
+				TypeID:    typeID,
+				Ordinal:   ordinal,
+				MaxLength: maxLen,
+			}
+		}
+	}
+}
+
+func isFilteredName(name string) bool {
+	if len(name) > 4 {
+		prefix := name[:4]
+		if prefix == "PK__" || prefix == "FK__" || prefix == "DF__" || prefix == "UQ__" {
+			return true
+		}
+	}
+	if strings.ContainsRune(name, '/') {
+		return true
+	}
+	if name == "Value" || name == "Case__000000000000092C" {
+		return true
+	}
+	return false
+}
+
+// ScanCatalogNames scans all Leaf pages for table and column name pairs.
+// Kept for backward compatibility; prefer ReadCatalog for structured data.
 func ScanCatalogNames(pr *PageReader, totalPages int) ([]CatalogEntry, error) {
 	seen := make(map[[2]string]bool)
 	var entries []CatalogEntry
@@ -69,8 +210,6 @@ func ScanCatalogNames(pr *PageReader, totalPages int) ([]CatalogEntry, error) {
 		if ClassifyPage(page) != PageLeaf {
 			continue
 		}
-
-		// Scan for ASCII string pairs: tableName\0columnName\0
 		found := findNamePairs(page, pg)
 		for _, e := range found {
 			key := [2]string{e.TableName, e.ColumnName}
@@ -83,46 +222,36 @@ func ScanCatalogNames(pr *PageReader, totalPages int) ([]CatalogEntry, error) {
 	return entries, nil
 }
 
-// ExtractTableNames returns a sorted deduplicated list of table names found
-// in catalog pages. Filters out constraint names (PK__, FK__, DF__, UQ__)
-// and internal markers.
+// CatalogEntry represents a table/column name pair found in catalog pages.
+type CatalogEntry struct {
+	TableName  string
+	ColumnName string
+	PageNum    int
+	Offset     int
+}
+
+// ExtractTableNames returns deduplicated table names from catalog entries.
 func ExtractTableNames(entries []CatalogEntry) []string {
 	seen := make(map[string]bool)
 	var names []string
-
 	for _, e := range entries {
-		name := e.TableName
-		if seen[name] {
+		if seen[e.TableName] || isFilteredName(e.TableName) || len(e.TableName) < 2 {
 			continue
 		}
-		// Filter out constraint/index names
-		if len(name) > 4 && (name[:4] == "PK__" || name[:4] == "FK__" || name[:4] == "DF__" || name[:4] == "UQ__") {
-			continue
-		}
-		// Filter out names with slashes (data values, not table names)
-		if bytes.ContainsRune([]byte(name), '/') {
-			continue
-		}
-		// Filter out very short names or all-hex names
-		if len(name) < 2 {
-			continue
-		}
-		seen[name] = true
-		names = append(names, name)
+		seen[e.TableName] = true
+		names = append(names, e.TableName)
 	}
 	return names
 }
 
 func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 	var results []CatalogEntry
-	n := len(page) - 64 // skip tail area
+	n := len(page) - 64
 
-	i := 0x20 // skip page header
+	i := 0x20
 	for i < n {
-		// Look for the start of a table name (uppercase letter or _)
 		b := page[i]
 		if (b >= 'A' && b <= 'Z') || b == '_' {
-			// Read first string (table name candidate)
 			start1 := i
 			for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
 				i++
@@ -132,9 +261,8 @@ func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 				continue
 			}
 			name1 := string(page[start1:i])
-			i++ // skip null
+			i++
 
-			// Read second string (column name candidate)
 			if i < n && page[i] >= 32 && page[i] < 127 {
 				start2 := i
 				for i < n && page[i] != 0 && page[i] >= 32 && page[i] < 127 {
