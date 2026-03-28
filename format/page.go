@@ -13,6 +13,7 @@ const defaultCacheSize = 64 // number of pages to cache
 type PageReader struct {
 	r        io.ReaderAt
 	header   *FileHeader
+	dec      Decryptor
 	mu       sync.Mutex
 	cache    map[int]*list.Element
 	lru      *list.List
@@ -37,6 +38,13 @@ func NewPageReader(r io.ReaderAt, header *FileHeader, cacheSize int) *PageReader
 		lru:      list.New(),
 		maxCache: cacheSize,
 	}
+}
+
+// NewPageReaderWithDecryptor creates a PageReader that decrypts pages after reading.
+func NewPageReaderWithDecryptor(r io.ReaderAt, header *FileHeader, cacheSize int, dec Decryptor) *PageReader {
+	pr := NewPageReader(r, header, cacheSize)
+	pr.dec = dec
+	return pr
 }
 
 // ReadPage returns the raw bytes of the page at the given page number.
@@ -69,6 +77,13 @@ func (pr *PageReader) ReadPage(pageNum int) ([]byte, error) {
 		return nil, fmt.Errorf("page %d: read 0 bytes at offset %d", pageNum, offset)
 	}
 	buf = buf[:n]
+
+	if pr.dec != nil {
+		buf, err = pr.dec.DecryptPage(pageNum, buf)
+		if err != nil {
+			return nil, fmt.Errorf("decrypting page %d: %w", pageNum, err)
+		}
+	}
 
 	// Store in cache
 	cp := &cachedPage{pageNum: pageNum, data: make([]byte, len(buf))}

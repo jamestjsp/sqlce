@@ -97,6 +97,57 @@ func TestPageTypeString(t *testing.T) {
 	}
 }
 
+func TestParseDataPageTarget(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	h, _ := ReadHeader(f)
+	pr := NewPageReader(f, h, 64)
+
+	page9, _ := pr.ReadPage(9)
+	target := ParseDataPageTarget(page9)
+	if target == 0 {
+		t.Error("expected non-zero target for Data page 9 (obj 1087)")
+	}
+	t.Logf("Data page 9 (obj %d): target=%d", PageObjectID(page9), target)
+
+	leafPage, _ := pr.ReadPage(1)
+	if ParseDataPageTarget(leafPage) != 0 {
+		t.Error("expected 0 target for Leaf page")
+	}
+
+	page24, _ := pr.ReadPage(24)
+	emptyTarget := ParseDataPageTarget(page24)
+	t.Logf("Data page 24 (obj %d): target=%d (empty table)", PageObjectID(page24), emptyTarget)
+}
+
+func TestScanDataPageTargets(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	h, _ := ReadHeader(f)
+	fi, _ := f.Stat()
+	totalPages := int(fi.Size()) / h.PageSize
+	pr := NewPageReader(f, h, 128)
+
+	targets := ScanDataPageTargets(pr, totalPages)
+	t.Logf("Found %d Data page -> Leaf objectID mappings", len(targets))
+
+	if len(targets) == 0 {
+		t.Error("expected some Data page targets")
+	}
+
+	for dataObj, leafObj := range targets {
+		t.Logf("  Data obj %d -> Leaf obj %d", dataObj, leafObj)
+	}
+}
+
 func TestPageObjectID(t *testing.T) {
 	f, err := os.Open("../data/Depropanizer.sdf")
 	if err != nil {

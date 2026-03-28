@@ -2,6 +2,7 @@ package format
 
 import (
 	"reflect"
+	"time"
 )
 
 // SQL CE internal type IDs as discovered from catalog record analysis.
@@ -14,6 +15,7 @@ const (
 	TypeReal             uint16 = 0x06
 	TypeMoney            uint16 = 0x08
 	TypeBit              uint16 = 0x0B
+	TypeNChar            uint16 = 0x1E
 	TypeNVarchar         uint16 = 0x1F
 	TypeDatetime         uint16 = 0x40
 	TypeImage            uint16 = 0x41
@@ -53,6 +55,7 @@ var (
 	typeFloat64 = reflect.TypeOf(float64(0))
 	typeString  = reflect.TypeOf("")
 	typeBytes   = reflect.TypeOf([]byte(nil))
+	typeTime    = reflect.TypeOf(time.Time{})
 )
 
 // typeRegistry maps SQL CE type IDs to TypeInfo.
@@ -66,13 +69,14 @@ var typeRegistry = map[uint16]TypeInfo{
 	TypeMoney:            {TypeMoney, "money", typeInt64, 8, false},
 	TypeBit:              {TypeBit, "bit", typeBool, 1, false},
 	TypeNVarchar:         {TypeNVarchar, "nvarchar", typeString, 0, true},
-	TypeDatetime:         {TypeDatetime, "datetime", typeFloat64, 8, false},
-	TypeImage:            {TypeImage, "image", typeBytes, 0, true},
-	TypeBinary:           {TypeBinary, "binary", typeBytes, 0, false},
+	TypeNChar:            {TypeNChar, "nchar", typeString, 0, true},
+	TypeDatetime:         {TypeDatetime, "datetime", typeTime, 8, false},
+	TypeImage:            {TypeImage, "image", typeBytes, 16, false},
+	TypeBinary:           {TypeBinary, "binary", typeBytes, 0, true},
 	TypeVarBinary:        {TypeVarBinary, "varbinary", typeBytes, 0, true},
-	TypeNText:            {TypeNText, "ntext", typeString, 0, true},
+	TypeNText:            {TypeNText, "ntext", typeString, 16, false},
 	TypeUniqueIdentifier: {TypeUniqueIdentifier, "uniqueidentifier", typeString, 16, false},
-	TypeNumeric:          {TypeNumeric, "numeric", typeString, 0, false},
+	TypeNumeric:          {TypeNumeric, "numeric", typeString, 19, false},
 	TypeRowVersion:       {TypeRowVersion, "rowversion", typeBytes, 8, false},
 }
 

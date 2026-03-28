@@ -101,6 +101,29 @@ func TestSQLDriverQuery_DataArrayTypes(t *testing.T) {
 	t.Logf("GUID=%s ArrayType=%s Interval=%d Unit=%s", id, arrayType, interval, unit)
 }
 
+func TestSQLDriverQuery_WithoutObjectID(t *testing.T) {
+	db, err := sql.Open("sqlce", "../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query("SELECT * FROM Properties")
+	if err != nil {
+		t.Fatalf("Query without OBJECTID: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if count != 6 {
+		t.Errorf("expected 6 rows, got %d", count)
+	}
+	t.Logf("Properties without OBJECTID: %d rows", count)
+}
+
 func TestSQLDriverQuery_QuotedTable(t *testing.T) {
 	db, err := sql.Open("sqlce", "../data/Depropanizer.sdf")
 	if err != nil {

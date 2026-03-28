@@ -13,8 +13,8 @@ type ObjectIDInfo struct {
 	RecordCount int
 }
 
-// CollectObjectIDInfo scans all Leaf pages and collects metadata per objectID.
-// This is fast—only reads page headers, no record parsing.
+// CollectObjectIDInfo scans all Leaf and Data pages and collects metadata per objectID.
+// This is fast -- only reads page headers, no record parsing.
 // System/catalog pages where byte 0x1C contains record data (not a column count)
 // are filtered out by checking for unreasonable column count values.
 func CollectObjectIDInfo(pr *format.PageReader, totalPages int) (map[uint16]*ObjectIDInfo, error) {
@@ -25,7 +25,8 @@ func CollectObjectIDInfo(pr *format.PageReader, totalPages int) (map[uint16]*Obj
 		if err != nil {
 			return nil, err
 		}
-		if format.ClassifyPage(page) != format.PageLeaf {
+		pt := format.ClassifyPage(page)
+		if pt != format.PageLeaf && pt != format.PageData {
 			continue
 		}
 		objID := format.PageObjectID(page)
