@@ -317,8 +317,7 @@ const sysObjectsMarker = "__SysObjects\x00"
 const sysObjectsObjIDOffset = 62
 
 func extractObjectMap(pr *PageReader, totalPages int) map[string][]uint16 {
-	dataTargets := ScanDataPageTargets(pr, totalPages)
-	leafObjIDs := scanLeafObjectIDs(pr, totalPages)
+	parentToLeafIDs := scanLeafPagesByParent(pr, totalPages)
 
 	seen := make(map[string]bool)
 	objectMap := make(map[string][]uint16)
@@ -331,31 +330,41 @@ func extractObjectMap(pr *PageReader, totalPages int) map[string][]uint16 {
 		if ClassifyPage(page) != PageLeaf {
 			continue
 		}
-		extractSysObjectRecords(page, dataTargets, leafObjIDs, seen, objectMap)
+		extractSysObjectRecords(page, parentToLeafIDs, seen, objectMap)
 	}
 
 	return objectMap
 }
 
-func scanLeafObjectIDs(pr *PageReader, totalPages int) map[uint16]bool {
-	ids := make(map[uint16]bool)
+func scanLeafPagesByParent(pr *PageReader, totalPages int) map[uint16][]uint16 {
+	groups := make(map[uint16]map[uint16]bool)
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
 			continue
 		}
-		if ClassifyPage(page) != PageLeaf {
+		if ClassifyPage(page) != PageLeaf || page[0x14] == 0 {
 			continue
 		}
-		if page[0x14] > 0 {
-			ids[PageObjectID(page)] = true
+		parentID := binary.LittleEndian.Uint16(page[0x10:0x12])
+		objID := PageObjectID(page)
+		if groups[parentID] == nil {
+			groups[parentID] = make(map[uint16]bool)
 		}
+		groups[parentID][objID] = true
 	}
-	return ids
+	result := make(map[uint16][]uint16, len(groups))
+	for parentID, set := range groups {
+		ids := make([]uint16, 0, len(set))
+		for id := range set {
+			ids = append(ids, id)
+		}
+		result[parentID] = ids
+	}
+	return result
 }
 
-
-func extractSysObjectRecords(page []byte, dataTargets map[uint16]uint16, leafObjIDs map[uint16]bool, seen map[string]bool, objectMap map[string][]uint16) {
+func extractSysObjectRecords(page []byte, parentToLeafIDs map[uint16][]uint16, seen map[string]bool, objectMap map[string][]uint16) {
 	n := len(page) - 16
 
 	for i := 0x20; i < n-len(sysObjectsMarker)-2; i++ {
@@ -380,12 +389,9 @@ func extractSysObjectRecords(page []byte, dataTargets map[uint16]uint16, leafObj
 
 		dataObjID := binary.LittleEndian.Uint16(page[off : off+2])
 
-		if leafObjID, hasLeaf := dataTargets[dataObjID]; hasLeaf {
+		if leafIDs, ok := parentToLeafIDs[dataObjID]; ok && len(leafIDs) > 0 {
 			seen[tableName] = true
-			objectMap[tableName] = []uint16{leafObjID}
-		} else if leafObjIDs[dataObjID] {
-			seen[tableName] = true
-			objectMap[tableName] = []uint16{dataObjID}
+			objectMap[tableName] = leafIDs
 		}
 	}
 }
