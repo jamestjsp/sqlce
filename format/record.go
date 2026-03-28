@@ -40,9 +40,12 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 
 	var fixedCols []colLayout
 	var varCols []colLayout
+	var bitCols []colLayout
 	for i, c := range columns {
 		ti := LookupType(c.TypeID)
-		if ti.IsVariable {
+		if c.TypeID == TypeBit {
+			bitCols = append(bitCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
+		} else if ti.IsVariable {
 			varCols = append(varCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
 		} else {
 			fixedCols = append(fixedCols, colLayout{schemaIdx: i, size: ti.FixedSize, typeID: c.TypeID})
@@ -60,7 +63,6 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 	}
 
 	// Find record starts by scanning for [00000000][colCount LE32] pattern.
-	// This avoids relying on variable section nextOff which can be imprecise.
 	ccBytes := [4]byte{byte(colCount), byte(colCount >> 8), byte(colCount >> 16), byte(colCount >> 24)}
 	var recOffsets []int
 	for i := 0x18; i < len(page)-8 && len(recOffsets) < recordCount; i++ {
@@ -77,7 +79,7 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 		if offset+9 > len(page) {
 			break
 		}
-		r, _, err := parseOneRecord(page, offset, fixedCols, varCols, len(columns), bmpExtra)
+		r, _, err := parseOneRecord(page, offset, fixedCols, varCols, bitCols, len(columns), bmpExtra)
 		if err != nil {
 			continue
 		}
@@ -95,7 +97,7 @@ type colLayout struct {
 	typeID    uint16
 }
 
-func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, totalCols int, nullBmpExtra int) (*Record, int, error) {
+func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLayout, totalCols int, nullBmpExtra int) (*Record, int, error) {
 	if offset+9 > len(page) {
 		return nil, len(page), fmt.Errorf("offset %d past page end", offset)
 	}
@@ -105,12 +107,29 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 	_ = binary.LittleEndian.Uint32(page[offset:])
 	offset += 4 // colCount
 
-	// First byte is always present (header/bitmap byte).
-	// Extra null bitmap bytes are table-specific (from reference data).
-	offset++ // header byte
-	offset += nullBmpExtra
+	// Bitmap layout: [null flags: ceil(colCount/8) bytes][bit values: ceil(numBitCols/8) bytes]
+	bitmapSize := 1 + nullBmpExtra
+	var bitmapBytes []byte
+	if offset+bitmapSize <= len(page) {
+		bitmapBytes = make([]byte, bitmapSize)
+		copy(bitmapBytes, page[offset:offset+bitmapSize])
+	}
+	offset += bitmapSize
 
 	values := make([][]byte, totalCols)
+
+	// Extract bit column values from the bit-value section of the bitmap
+	if len(bitCols) > 0 && len(bitmapBytes) > 0 {
+		nullFlagBytes := (totalCols + 7) / 8
+		for i, bc := range bitCols {
+			byteIdx := nullFlagBytes + i/8
+			bitIdx := uint(i % 8)
+			if byteIdx < len(bitmapBytes) {
+				val := (bitmapBytes[byteIdx] >> bitIdx) & 1
+				values[bc.schemaIdx] = []byte{val}
+			}
+		}
+	}
 
 	fixedDataSize := 0
 	for _, fc := range fixedCols {
