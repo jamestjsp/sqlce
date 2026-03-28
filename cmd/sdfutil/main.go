@@ -100,6 +100,12 @@ func main() {
 			}
 			cmdExport(os.Args[2], os.Args[3], uint16(objID), outputFormat)
 		}
+	case "control-layer":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: sdfutil control-layer <file.sdf>")
+			os.Exit(1)
+		}
+		cmdControlLayer(os.Args[2])
 	default:
 		usage()
 		os.Exit(1)
@@ -115,7 +121,8 @@ Commands:
   schema <file.sdf> <table>                         Show table column schema
   dump   <file.sdf> <table> <objectID>              Dump rows (tab-separated)
   export <file.sdf> <table> <objectID>              Export (--format csv|json)
-  export --format sqlite <file.sdf> <output.db>     Export all tables to SQLite`)
+  export --format sqlite <file.sdf> <output.db>     Export all tables to SQLite
+  control-layer <file.sdf>                           Extract control layer as JSON`)
 }
 
 func cmdInfo(path string) {
@@ -408,6 +415,30 @@ func ceTypeToSQLite(typeID uint16) string {
 	default:
 		return "TEXT"
 	}
+}
+
+func cmdControlLayer(sdfPath string) {
+	db, err := engine.Open(sdfPath)
+	if err != nil {
+		fatal(err)
+	}
+	defer db.Close()
+
+	result, err := engine.ExtractControlLayer(db)
+	if err != nil {
+		fatal(err)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(result); err != nil {
+		fatal(err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Q1: %d, Q2: %d, Q3: %d, Q4: %d, Q5: %d, Q6: %d, Q7: %d, Q8: %d\n",
+		len(result.ControlMatrix), len(result.CVRoleConstraints), len(result.EconomicFunctions),
+		len(result.VariableTransforms), len(result.ModelMetadata), len(result.ExecutionSequence),
+		len(result.UserParameters), len(result.LoopDetails))
 }
 
 func fatal(err error) {
