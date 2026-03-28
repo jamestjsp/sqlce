@@ -34,7 +34,7 @@ import (
 // Catalog holds the parsed schema metadata for all tables in the database.
 type Catalog struct {
 	Tables    []TableDef
-	ObjectMap map[string]uint16
+	ObjectMap map[string][]uint16
 }
 
 // TableDef describes a single table.
@@ -316,11 +316,12 @@ func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 const sysObjectsMarker = "__SysObjects\x00"
 const sysObjectsObjIDOffset = 62
 
-func extractObjectMap(pr *PageReader, totalPages int) map[string]uint16 {
+func extractObjectMap(pr *PageReader, totalPages int) map[string][]uint16 {
 	dataTargets := ScanDataPageTargets(pr, totalPages)
+	leafObjIDs := scanLeafObjectIDs(pr, totalPages)
 
 	seen := make(map[string]bool)
-	objectMap := make(map[string]uint16)
+	objectMap := make(map[string][]uint16)
 
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
@@ -330,13 +331,31 @@ func extractObjectMap(pr *PageReader, totalPages int) map[string]uint16 {
 		if ClassifyPage(page) != PageLeaf {
 			continue
 		}
-		extractSysObjectRecords(page, dataTargets, seen, objectMap)
+		extractSysObjectRecords(page, dataTargets, leafObjIDs, seen, objectMap)
 	}
 
 	return objectMap
 }
 
-func extractSysObjectRecords(page []byte, dataTargets map[uint16]uint16, seen map[string]bool, objectMap map[string]uint16) {
+func scanLeafObjectIDs(pr *PageReader, totalPages int) map[uint16]bool {
+	ids := make(map[uint16]bool)
+	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			continue
+		}
+		if ClassifyPage(page) != PageLeaf {
+			continue
+		}
+		if page[0x14] > 0 {
+			ids[PageObjectID(page)] = true
+		}
+	}
+	return ids
+}
+
+
+func extractSysObjectRecords(page []byte, dataTargets map[uint16]uint16, leafObjIDs map[uint16]bool, seen map[string]bool, objectMap map[string][]uint16) {
 	n := len(page) - 16
 
 	for i := 0x20; i < n-len(sysObjectsMarker)-2; i++ {
@@ -360,10 +379,13 @@ func extractSysObjectRecords(page []byte, dataTargets map[uint16]uint16, seen ma
 		}
 
 		dataObjID := binary.LittleEndian.Uint16(page[off : off+2])
-		leafObjID, hasLeaf := dataTargets[dataObjID]
-		if hasLeaf {
+
+		if leafObjID, hasLeaf := dataTargets[dataObjID]; hasLeaf {
 			seen[tableName] = true
-			objectMap[tableName] = leafObjID
+			objectMap[tableName] = []uint16{leafObjID}
+		} else if leafObjIDs[dataObjID] {
+			seen[tableName] = true
+			objectMap[tableName] = []uint16{dataObjID}
 		}
 	}
 }

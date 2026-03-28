@@ -80,16 +80,22 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 		return nil, len(page), fmt.Errorf("offset %d past page end", offset)
 	}
 
-	offset += 4
+	offset += 4 // status
 
 	_ = binary.LittleEndian.Uint32(page[offset:])
-	offset += 4
+	offset += 4 // colCount
 
 	header := page[offset]
 	offset++
 
+	// Header 0xF0: no null bitmap.
+	// Other header values: null bitmap of ceil(totalCols/8) bytes follows.
 	if header != 0xF0 {
-		offset++
+		nullBmpSize := (totalCols + 7) / 8
+		if offset+nullBmpSize > len(page) {
+			return nil, len(page), fmt.Errorf("null bitmap overflows at %d", offset)
+		}
+		offset += nullBmpSize
 	}
 
 	values := make([][]byte, totalCols)
@@ -110,9 +116,14 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols []colLayout, tot
 	}
 
 	if len(varCols) > 0 && offset < len(page)-4 {
-		for offset < len(page)-4 && page[offset] != 0x80 {
-			offset++
+		if header == 0xF0 {
+			// No null bitmap — may need small scan to find 0x80 flag
+			for offset < len(page)-4 && page[offset] != 0x80 {
+				offset++
+			}
 		}
+		// For non-0xF0: null bitmap already skipped, variable section
+		// flag (0x80 or 0x00) is at current offset
 		offset = parseVariableColumns(page, offset, varCols, values)
 	}
 
@@ -206,8 +217,16 @@ func parseVariableColumns(page []byte, offset int, varCols []colLayout, values [
 }
 
 func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns []ColumnDef) ([]Record, error) {
-	var records []Record
+	return ScanTableRecordsMulti(pr, totalPages, []uint16{objectID}, columns)
+}
 
+func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, columns []ColumnDef) ([]Record, error) {
+	idSet := make(map[uint16]bool, len(objectIDs))
+	for _, id := range objectIDs {
+		idSet[id] = true
+	}
+
+	var records []Record
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
@@ -217,7 +236,7 @@ func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns [
 		if pt != PageLeaf && pt != PageData {
 			continue
 		}
-		if PageObjectID(page) != objectID {
+		if !idSet[PageObjectID(page)] {
 			continue
 		}
 

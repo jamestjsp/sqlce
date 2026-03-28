@@ -80,7 +80,7 @@ func TestDataValidation(t *testing.T) {
 			continue
 		}
 
-		scanner := engine.NewTableScanner(pr, totalPages, table, objID)
+		scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{objID})
 		result, err := scanner.Scan()
 		if err != nil {
 			t.Logf("  SKIP %s: scan error: %v", tableName, err)
@@ -111,7 +111,7 @@ func TestDataValidation(t *testing.T) {
 		if table == nil {
 			t.Skip("DataArrayTypes not in catalog")
 		}
-		scanner := engine.NewTableScanner(pr, totalPages, table, 1321)
+		scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1321})
 		result, err := scanner.Scan()
 		if err != nil {
 			t.Fatalf("scan: %v", err)
@@ -170,7 +170,7 @@ func TestDataValidation(t *testing.T) {
 		if table == nil {
 			t.Skip("Properties not in catalog")
 		}
-		scanner := engine.NewTableScanner(pr, totalPages, table, 1305)
+		scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1305})
 		result, err := scanner.Scan()
 		if err != nil {
 			t.Fatalf("scan: %v", err)
@@ -238,7 +238,7 @@ func TestDataValidation(t *testing.T) {
 		if table == nil {
 			t.Skip("BlcModel not in catalog")
 		}
-		scanner := engine.NewTableScanner(pr, totalPages, table, 1395)
+		scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1395})
 		result, err := scanner.Scan()
 		if err != nil {
 			t.Fatalf("scan: %v", err)
@@ -290,7 +290,7 @@ func TestDataValidation(t *testing.T) {
 			if table == nil {
 				continue
 			}
-			scanner := engine.NewTableScanner(pr, totalPages, table, objID)
+			scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{objID})
 			result, err := scanner.Scan()
 			if err != nil {
 				continue
@@ -315,7 +315,7 @@ func TestDataValidation(t *testing.T) {
 		if table == nil {
 			t.Skip("DataArrayTypes not in catalog")
 		}
-		scanner := engine.NewTableScanner(pr, totalPages, table, 1321)
+		scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1321})
 		result, err := scanner.Scan()
 		if err != nil || len(result.Rows) == 0 {
 			t.Skip("no data")

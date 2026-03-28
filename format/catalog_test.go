@@ -211,13 +211,13 @@ func TestCatalogObjectMap(t *testing.T) {
 	}
 
 	for table, expectedObjID := range knownMappings {
-		objID, ok := cat.ObjectMap[table]
+		objIDs, ok := cat.ObjectMap[table]
 		if !ok {
 			t.Errorf("%s: not in ObjectMap", table)
 			continue
 		}
-		if objID != expectedObjID {
-			t.Errorf("%s: objectID=%d, want %d", table, objID, expectedObjID)
+		if len(objIDs) == 0 || objIDs[0] != expectedObjID {
+			t.Errorf("%s: objectIDs=%v, want [%d]", table, objIDs, expectedObjID)
 		}
 	}
 
@@ -225,7 +225,7 @@ func TestCatalogObjectMap(t *testing.T) {
 		t.Errorf("expected at least 50 ObjectMap entries, got %d", len(cat.ObjectMap))
 	}
 
-	for name, objID := range cat.ObjectMap {
-		t.Logf("  %s -> %d", name, objID)
+	for name, objIDs := range cat.ObjectMap {
+		t.Logf("  %s -> %v", name, objIDs)
 	}
 }
