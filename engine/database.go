@@ -197,3 +197,21 @@ func (t *Table) ScanWithObjectID(objectID uint16) (*ScanResult, error) {
 	scanner := NewTableScanner(t.db.reader, t.db.totalPages, t.def, objectID)
 	return scanner.Scan()
 }
+
+// Rows returns a RowIterator for the table. Requires the table's objectID to be known.
+func (t *Table) Rows() (*RowIterator, error) {
+	result, err := t.Scan()
+	if err != nil {
+		return nil, err
+	}
+	return newRowIterator(result), nil
+}
+
+// RowsWithObjectID returns a RowIterator using the specified objectID.
+func (t *Table) RowsWithObjectID(objectID uint16) (*RowIterator, error) {
+	result, err := t.ScanWithObjectID(objectID)
+	if err != nil {
+		return nil, err
+	}
+	return newRowIterator(result), nil
+}
