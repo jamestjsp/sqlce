@@ -12,7 +12,7 @@ type TableScanner struct {
 	reader     *format.PageReader
 	totalPages int
 	table      *format.TableDef
-	objectID   uint16
+	objectIDs  []uint16
 }
 
 // ScanResult holds the scanned rows from a table.
@@ -22,19 +22,19 @@ type ScanResult struct {
 }
 
 // NewTableScanner creates a scanner for the given table.
-// objectID identifies which Leaf pages belong to this table.
-func NewTableScanner(pr *format.PageReader, totalPages int, table *format.TableDef, objectID uint16) *TableScanner {
+// objectIDs identifies which Leaf pages belong to this table.
+func NewTableScanner(pr *format.PageReader, totalPages int, table *format.TableDef, objectIDs []uint16) *TableScanner {
 	return &TableScanner{
 		reader:     pr,
 		totalPages: totalPages,
 		table:      table,
-		objectID:   objectID,
+		objectIDs:  objectIDs,
 	}
 }
 
 // Scan reads all rows from the table's Leaf pages and returns typed values.
 func (ts *TableScanner) Scan() (*ScanResult, error) {
-	records, err := format.ScanTableRecords(ts.reader, ts.totalPages, ts.objectID, ts.table.Columns)
+	records, err := format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns)
 	if err != nil {
 		return nil, fmt.Errorf("scanning table %s: %w", ts.table.Name, err)
 	}

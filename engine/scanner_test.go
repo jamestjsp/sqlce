@@ -40,7 +40,7 @@ func TestTableScan_DataArrayTypes(t *testing.T) {
 	}
 
 	// Known objectID from binary analysis
-	scanner := engine.NewTableScanner(pr, totalPages, table, 1321)
+	scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1321})
 	result, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
@@ -89,7 +89,7 @@ func TestTableScan_Properties(t *testing.T) {
 		},
 	}
 
-	scanner := engine.NewTableScanner(pr, totalPages, table, 1305)
+	scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1305})
 	result, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
@@ -123,7 +123,7 @@ func TestTableScan_BlcModel(t *testing.T) {
 		},
 	}
 
-	scanner := engine.NewTableScanner(pr, totalPages, table, 1395)
+	scanner := engine.NewTableScanner(pr, totalPages, table, []uint16{1395})
 	result, err := scanner.Scan()
 	if err != nil {
 		t.Fatalf("Scan: %v", err)

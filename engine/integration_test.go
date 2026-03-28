@@ -156,6 +156,12 @@ func TestEndToEnd_ControlLayerQuery(t *testing.T) {
 	}
 	defer sdfDB.Close()
 
+	sqliteRef, err := sql.Open("sqlite", "../data/Depropanizer.db")
+	if err != nil {
+		t.Fatalf("Open SQLite ref: %v", err)
+	}
+	defer sqliteRef.Close()
+
 	requiredTables := []string{
 		"Relation", "ItemInformation", "RelationBlocks", "Blocks",
 		"ModelLayerBlocks", "ModelLayers", "SisoRelation", "SisoElements",
@@ -164,45 +170,33 @@ func TestEndToEnd_ControlLayerQuery(t *testing.T) {
 		"VariableTransform", "Models", "ExecutionSequence", "UserParameter",
 	}
 
-	allPresent := true
+	matched := 0
+	partial := 0
 	for _, name := range requiredTables {
 		tbl, err := sdfDB.Table(name)
 		if err != nil {
 			t.Errorf("missing table: %s", name)
-			allPresent = false
 			continue
 		}
 		result, err := tbl.Scan()
 		if err != nil {
-			t.Logf("  %s: scan error: %v", name, err)
+			t.Errorf("%s: scan error: %v", name, err)
 			continue
 		}
-		t.Logf("  %s: %d rows", name, len(result.Rows))
-	}
 
-	if !allPresent {
-		t.Fatal("not all required tables present")
-	}
+		var expected int
+		sqliteRef.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, name)).Scan(&expected)
 
-	sqliteRef, err := sql.Open("sqlite", "../data/Depropanizer.db")
-	if err != nil {
-		t.Fatalf("Open SQLite ref: %v", err)
+		if len(result.Rows) == expected {
+			matched++
+			t.Logf("  %s: %d rows OK", name, len(result.Rows))
+		} else {
+			partial++
+			pct := float64(len(result.Rows)) * 100 / float64(expected)
+			t.Logf("  %s: %d/%d rows (%.0f%%)", name, len(result.Rows), expected, pct)
+		}
 	}
-	defer sqliteRef.Close()
-
-	queries := map[string]string{
-		"Query6_ExecutionSequence": "SELECT ExecutionSequenceIdentifier, IsDefault, ExecutionIntervalInMilliseconds FROM ExecutionSequence",
-		"Query3_EconomicFunction": "SELECT COUNT(*) FROM EconomicFunction",
-		"Query5_Models":           "SELECT COUNT(*) FROM Models",
-	}
-
-	for qName, q := range queries {
-		t.Run(qName, func(t *testing.T) {
-			var refCount int
-			sqliteRef.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM (%s)", q)).Scan(&refCount)
-			t.Logf("  reference: %d rows", refCount)
-		})
-	}
+	t.Logf("\nControl layer: %d/%d tables fully matched, %d partial", matched, len(requiredTables), partial)
 }
 
 // TestIntegration_CompareWithSQLite compares mapped tables against SQLite reference.
