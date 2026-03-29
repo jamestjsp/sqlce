@@ -209,10 +209,14 @@ func TestControlLayerQueries(t *testing.T) {
 	}
 	defer sdfDB.Close()
 
-	exportedDB, err := engine.ExportToSQLite(sdfDB)
+	exportRes, err := engine.ExportToSQLite(sdfDB)
 	if err != nil {
 		t.Fatalf("ExportToSQLite: %v", err)
 	}
+	for _, w := range exportRes.Warnings {
+		t.Logf("export warning: %v", w)
+	}
+	exportedDB := exportRes.DB
 	defer exportedDB.Close()
 
 	refDB, err := sql.Open("sqlite", "../data/Depropanizer.db")

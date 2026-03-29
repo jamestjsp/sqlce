@@ -152,7 +152,7 @@ func ConvertValue(data []byte, typeID uint16) (any, error) {
 // Format: [precision u8][scale u8][sign u8 (1=pos,0=neg)][16-byte uint128 LE]
 func parseNumeric(data []byte) (string, error) {
 	if len(data) != 19 {
-		return fmt.Sprintf("%x", data), nil
+		return "", fmt.Errorf("numeric: expected 19 bytes, got %d", len(data))
 	}
 
 	scale := int(data[1])
