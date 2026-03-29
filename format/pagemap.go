@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 const (
 	offsetPage1Addr = 0x2C
@@ -13,7 +16,8 @@ const (
 )
 
 type PageMapping struct {
-	mapping map[int]int
+	mapping  map[int]int
+	Warnings []error
 }
 
 func BuildPageMapping(pr *PageReader) (*PageMapping, error) {
@@ -45,6 +49,7 @@ func BuildPageMapping(pr *PageReader) (*PageMapping, error) {
 
 		mapB, err := pr.ReadPage(addr)
 		if err != nil {
+			pm.Warnings = append(pm.Warnings, fmt.Errorf("MapB slot %d (page %d): %w", i, addr, err))
 			continue
 		}
 
