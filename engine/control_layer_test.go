@@ -26,7 +26,7 @@ func TestExtractControlLayer(t *testing.T) {
 	}
 
 	checks := []queryCheck{
-		{"Q1_ControlMatrix", len(result.ControlMatrix), 0, true},
+		{"Q1_ControlMatrix", len(result.ControlMatrix), 44, false},
 		{"Q2_CVRoleConstraints", len(result.CVRoleConstraints), 5, false},
 		{"Q3_EconomicFunctions", len(result.EconomicFunctions), 2, false},
 		{"Q4_VariableTransforms", len(result.VariableTransforms), 1, false},

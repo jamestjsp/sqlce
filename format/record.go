@@ -133,18 +133,40 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLa
 	for _, fc := range fixedCols {
 		fixedDataSize += fc.size
 	}
+
+	// When variable columns exist, the fixed area may be smaller than sum of sizes
+	// due to overlapping column positions. Find the variable section start by
+	// scanning backward for the 0x80 flag byte from the end of the entry.
+	if len(varCols) > 0 {
+		entryEnd := len(page)
+		for pos := entryEnd - 1; pos > offset; pos-- {
+			if page[pos] == 0x80 && pos > offset && page[pos-1] == 0x00 {
+				actualFixed := (pos - 1) - offset
+				if actualFixed > 0 && actualFixed < fixedDataSize {
+					fixedDataSize = actualFixed
+				}
+				break
+			}
+		}
+	}
+
 	if offset+fixedDataSize > len(page) {
 		return nil, len(page), fmt.Errorf("fixed data overflows page at %d", offset)
 	}
 
+	fixedAreaEnd := offset + fixedDataSize
 	for _, fc := range fixedCols {
+		if offset+fc.size > fixedAreaEnd {
+			break
+		}
 		data := make([]byte, fc.size)
 		copy(data, page[offset:offset+fc.size])
 		values[fc.schemaIdx] = data
 		offset += fc.size
 	}
+	offset = fixedAreaEnd
 
-	if len(varCols) > 0 && offset < len(page)-4 {
+	if len(varCols) > 0 && offset+2 <= len(page) {
 		offset++ // skip 1-byte separator between fixed data and variable section
 		offset = parseVariableColumns(page, offset, varCols, values)
 	}

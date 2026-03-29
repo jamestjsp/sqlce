@@ -367,6 +367,7 @@ func cmdExportSQLite(sdfPath, outputPath string) {
 			continue
 		}
 
+		var insertErr bool
 		for _, row := range result.Rows {
 			args := make([]any, len(cols))
 			for i := range cols {
@@ -374,11 +375,25 @@ func cmdExportSQLite(sdfPath, outputPath string) {
 					args[i] = row[i]
 				}
 			}
-			insertStmt.Exec(args...)
+			if _, err := insertStmt.Exec(args...); err != nil {
+				insertStmt.Close()
+				tx.Rollback()
+				fmt.Fprintf(os.Stderr, "  skip %s: insert: %v\n", name, err)
+				skipped++
+				insertErr = true
+				break
+			}
+		}
+		if insertErr {
+			continue
 		}
 
 		insertStmt.Close()
-		tx.Commit()
+		if err := tx.Commit(); err != nil {
+			fmt.Fprintf(os.Stderr, "  skip %s: commit: %v\n", name, err)
+			skipped++
+			continue
+		}
 
 		totalRows += len(result.Rows)
 		exported++

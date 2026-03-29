@@ -2,10 +2,10 @@
 
 ## Current State
 
-Q2-Q8 produce correct row counts. Q1 produces 19/44 rows.
+All queries produce correct row counts.
 
 ```
-Q1: 19  (expected 44)    Q5: 2 ✓
+Q1: 44 ✓                 Q5: 2 ✓
 Q2: 5 ✓                  Q6: 2 ✓
 Q3: 2 ✓                  Q7: 3 ✓
 Q4: 1 ✓                  Q8: 3 ✓
@@ -13,28 +13,19 @@ Q4: 1 ✓                  Q8: 3 ✓
 
 ---
 
-## Issue 1: Bit Column Values Not Extracted (HIGH — blocks Q1)
+## Issue 1: Bit Column Values — FIXED
 
-**What**: `TypeBit` has `FixedSize=0` (`format/types.go:70`). The record parser skips bit columns entirely — `rec.Values[bitColIdx]` is always nil.
+Bit columns are correctly extracted from the bitmap section of each record.
+The bitmap layout is `[column-count header bytes][bit value bytes]` where
+the header bytes use high bits as padding (1s for unused positions).
+Bit extraction reads from `byte[nullFlagBytes + i/8]`, bit `i%8`.
 
-**Where bit values actually live**: In the null bitmap bytes at the start of each record. The bitmap format is `[headerByte][extraBytes...]` where extra byte count = `NullBmpExtra` per table. Bit column values are packed into these bytes alongside null flags for other columns.
-
-**Impact**: Three Q1 filters depend on bit values:
-- `ModelLayers.IsControlLayer = 1` — determines which model layer is the control layer
-- `SisoRelation.IsLegal = 1` — filters legal SISO relations
-- `ParametricElements.IsActive` — used in output
-
-The `bitTrue()` workaround in `engine/control_layer.go:580` defaults nil bits to `true`, which is wrong for `IsControlLayer` (only 1 of 3 model layers should match).
-
-**Fix approach**: In `parseOneRecord` (`format/record.go:98`), after reading the bitmap bytes:
-1. Save the raw bitmap bytes (currently discarded at line 103-109)
-2. For each bit column, extract its value from the appropriate bitmap bit
-3. Assign `[]byte{0}` or `[]byte{1}` to `values[schemaIdx]`
-
-**Unknowns**: Exact bit ordering within the bitmap. Empirical evidence suggests:
-- Header byte encodes column-count metadata (leading 1-bits = 8 - colCount for ≤8 cols)
-- Extra bytes contain actual null/bit values
-- Likely LSB-first per byte, but needs verification with known bit values (e.g., compare IsControlLayer=1 model layer GUID with bitmap bytes)
+Additionally, the fixed data area size was incorrect for tables with
+overlapping column positions (e.g., ParametricElements where int4 followed
+by float8 columns caused position overlap). The fix scans backward from
+the entry end to locate the variable section `0x00 0x80` marker, correctly
+determining the fixed/variable boundary. This fixed TransferFunction
+extraction for ParametricElements and unblocked Q1.
 
 ---
 
@@ -116,8 +107,8 @@ for offset < len(page)-4 && page[offset] != 0x80 {
 
 ## Priority Order
 
-1. **Bit extraction from bitmap** → fixes Q1 filters (IsControlLayer, IsLegal) → Q1 should go from 19 to ~44
-2. **Record boundary validation** → reduces false positive garbling → fixes remaining Q1 gap
+1. ~~**Bit extraction from bitmap**~~ — DONE. Q1 now produces 44 rows.
+2. **Record boundary validation** → reduces false positive garbling
 3. **Bounded 0x80 scan** → prevents variable section overshoot
 4. **Auto-detect bitmap size** → removes hardcoded dependency on Depropanizer.sdf
 5. **Status byte check** → cosmetic (already mitigated by scanner)

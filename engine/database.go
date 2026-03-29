@@ -11,7 +11,7 @@ import (
 
 // Database represents an opened SQL CE database file.
 type Database struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	file       *os.File
 	header     *format.FileHeader
 	reader     *format.PageReader
@@ -110,6 +110,9 @@ func buildPageIndex(pr *format.PageReader, totalPages int) (map[uint16][]int, er
 }
 
 func (db *Database) PagesForObjectIDs(objectIDs []uint16) []int {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	if db.pageIndex == nil {
 		return nil
 	}
@@ -129,6 +132,9 @@ func (db *Database) PagesForObjectIDs(objectIDs []uint16) []int {
 
 // Tables returns the names of all tables in the database, sorted alphabetically.
 func (db *Database) Tables() []string {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	names := make([]string, len(db.catalog.Tables))
 	for i, t := range db.catalog.Tables {
 		names[i] = t.Name
@@ -139,13 +145,16 @@ func (db *Database) Tables() []string {
 
 // TableCount returns the number of tables in the database.
 func (db *Database) TableCount() int {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	return len(db.catalog.Tables)
 }
 
 // Table returns a handle for the named table.
 func (db *Database) Table(name string) (*Table, error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
 	if db.closed {
 		return nil, fmt.Errorf("database is closed")
@@ -170,21 +179,33 @@ func (db *Database) Table(name string) (*Table, error) {
 
 // Header returns the parsed file header.
 func (db *Database) Header() *format.FileHeader {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	return db.header
 }
 
 // Catalog returns the parsed catalog.
 func (db *Database) Catalog() *format.Catalog {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	return db.catalog
 }
 
 // PageReader returns the underlying page reader.
 func (db *Database) PageReader() *format.PageReader {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	return db.reader
 }
 
 // TotalPages returns the total number of pages in the database file.
 func (db *Database) TotalPages() int {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
 	return db.totalPages
 }
 

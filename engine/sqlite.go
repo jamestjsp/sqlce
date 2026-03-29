@@ -3,6 +3,7 @@ package engine
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/jamestjat/sqlce/format"
@@ -21,10 +22,12 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 	for _, name := range db.Tables() {
 		tbl, err := db.Table(name)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "  export skip %s: %v\n", name, err)
 			continue
 		}
 		result, err := tbl.Scan()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "  export skip %s: scan: %v\n", name, err)
 			continue
 		}
 		cols := tbl.Columns()
@@ -34,6 +37,7 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 
 		createSQL := BuildCreateTable(name, cols)
 		if _, err := sqliteDB.Exec(createSQL); err != nil {
+			fmt.Fprintf(os.Stderr, "  export skip %s: create table: %v\n", name, err)
 			continue
 		}
 		if len(result.Rows) == 0 {
@@ -48,11 +52,13 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 
 		tx, err := sqliteDB.Begin()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "  export skip %s: begin: %v\n", name, err)
 			continue
 		}
 		stmt, err := tx.Prepare(insertSQL)
 		if err != nil {
 			tx.Rollback()
+			fmt.Fprintf(os.Stderr, "  export skip %s: prepare: %v\n", name, err)
 			continue
 		}
 		var execErr error
@@ -65,15 +71,18 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 			}
 			if _, err := stmt.Exec(args...); err != nil {
 				execErr = err
+				break
 			}
 		}
 		stmt.Close()
 		if execErr != nil {
 			tx.Rollback()
+			fmt.Fprintf(os.Stderr, "  export skip %s: insert: %v\n", name, execErr)
 			continue
 		}
 		if err := tx.Commit(); err != nil {
 			tx.Rollback()
+			fmt.Fprintf(os.Stderr, "  export skip %s: commit: %v\n", name, err)
 		}
 	}
 

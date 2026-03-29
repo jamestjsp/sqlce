@@ -148,6 +148,153 @@ func TestTableScan_BlcModel(t *testing.T) {
 	}
 }
 
+func TestBitmapAutoDetect(t *testing.T) {
+	db, err := engine.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	catalog := db.Catalog()
+	mapping := catalog.ObjectMap
+
+	tablesWithGUID := 0
+	tablesValid := 0
+	tablesFailed := 0
+
+	for _, table := range catalog.Tables {
+		objIDs, ok := mapping[table.Name]
+		if !ok || len(objIDs) == 0 {
+			continue
+		}
+
+		guidIdxs := []int{}
+		for i, col := range table.Columns {
+			if col.TypeID == format.TypeUniqueIdentifier {
+				guidIdxs = append(guidIdxs, i)
+			}
+		}
+		if len(guidIdxs) == 0 {
+			continue
+		}
+		tablesWithGUID++
+
+		scanner := engine.NewTableScanner(db.PageReader(), db.TotalPages(), &table, objIDs)
+		if pages := db.PagesForObjectIDs(objIDs); len(pages) > 0 {
+			scanner.SetPages(pages)
+		}
+		result, err := scanner.Scan()
+		if err != nil {
+			t.Logf("  %s: scan error: %v", table.Name, err)
+			tablesFailed++
+			continue
+		}
+		if len(result.Rows) == 0 {
+			continue
+		}
+
+		// Check non-null GUID values are plausible (36-char string format).
+		// All-zero GUIDs are valid (NULL or sentinel values).
+		bad := 0
+		checked := 0
+		for _, row := range result.Rows {
+			for _, gi := range guidIdxs {
+				if gi >= len(row) || row[gi] == nil {
+					continue
+				}
+				s, ok := row[gi].(string)
+				if !ok {
+					bad++
+					checked++
+					continue
+				}
+				if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+					bad++
+				}
+				checked++
+			}
+		}
+
+		if bad == 0 {
+			tablesValid++
+		} else {
+			tablesFailed++
+			t.Logf("  %s: %d/%d GUID values malformed (bmpExtra=%d, %d rows)",
+				table.Name, bad, checked, table.NullBmpExtra, len(result.Rows))
+		}
+	}
+
+	t.Logf("Tables with GUID columns: %d", tablesWithGUID)
+	t.Logf("  Valid: %d", tablesValid)
+	t.Logf("  Failed: %d", tablesFailed)
+
+	if tablesFailed > 0 {
+		t.Errorf("%d tables have malformed GUID values after bitmap auto-detect", tablesFailed)
+	}
+}
+
+func TestBitmapComputedMatchesBestProbe(t *testing.T) {
+	db, err := engine.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	pr := db.PageReader()
+	catalog := db.Catalog()
+
+	matched := 0
+	total := 0
+
+	for _, table := range catalog.Tables {
+		objIDs, ok := catalog.ObjectMap[table.Name]
+		if !ok || len(objIDs) == 0 {
+			continue
+		}
+
+		hasGUID := false
+		for _, col := range table.Columns {
+			if col.TypeID == format.TypeUniqueIdentifier {
+				hasGUID = true
+				break
+			}
+		}
+		if !hasGUID {
+			continue
+		}
+
+		pages := db.PagesForObjectIDs(objIDs)
+
+		bestBmp := -1
+		bestRecords := 0
+		for bmp := 0; bmp <= 3; bmp++ {
+			records, err := format.ScanTableRecordsPages(pr, pages, objIDs, table.Columns, bmp)
+			if err != nil {
+				continue
+			}
+			if len(records) > bestRecords {
+				bestRecords = len(records)
+				bestBmp = bmp
+			}
+		}
+
+		if bestBmp < 0 {
+			continue
+		}
+		total++
+
+		computedRecords, _ := format.ScanTableRecordsPages(pr, pages, objIDs, table.Columns, table.NullBmpExtra)
+		if len(computedRecords) == bestRecords {
+			matched++
+		} else {
+			t.Logf("  %s: computed bmp=%d yields %d records, best bmp=%d yields %d",
+				table.Name, table.NullBmpExtra, len(computedRecords), bestBmp, bestRecords)
+		}
+	}
+
+	t.Logf("Tables: %d/%d computed bitmap matches best probe record count", matched, total)
+}
+
 func TestFindTableObjectIDs(t *testing.T) {
 	pr, totalPages := openSDF(t)
 
