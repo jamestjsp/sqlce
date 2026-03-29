@@ -1,7 +1,16 @@
-A Go project to read sdf files just like sqlite db
+# sqlce
 
-We use ergo for backlog and task maanagemanr and may us ethe coresponding skill.
+A pure Go library for reading SQL Server Compact Edition (.sdf) database files.
 
-The refrance code is at reference\SqlCeToolbox
+## Project Context
 
-sample sdf file, sql acript and converted db is avilable at data folder
+- **Task management**: We use `ergo` for backlog and task management. Use the ergo skill when appropriate.
+- **Reference data**: Sample `.sdf` files, SQL scripts, and converted databases are available in the `data/` folder.
+- **Testing**: Run `go test ./...` for full test suite, `go vet ./...` for static analysis.
+
+## Key Packages
+
+- `format/` - Low-level binary format parsing (pages, records, catalog)
+- `engine/` - High-level API (Database, Table, Schema, RowIterator)
+- `driver/` - `database/sql` driver implementation
+- `cmd/sdfutil/` - CLI tool for inspecting and exporting SDF files
