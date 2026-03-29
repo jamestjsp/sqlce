@@ -1,14 +1,14 @@
 # sqlce
 
-A pure Go library for reading SQL Server Compact Edition (SQL CE) `.sdf` database files — no Windows, no COM, no ODBC required.
+A pure Go library for reading SQL Server Compact Edition (SQL CE) `.sdf` database files without requiring Windows, COM, or ODBC.
 
 ## Features
 
-- **Pure Go** — zero CGO dependencies, runs on any OS
-- **`database/sql` driver** — use standard Go database interfaces
-- **Engine API** — direct access to tables, schemas, and row iteration
-- **CLI tool** (`sdfutil`) — inspect and export SDF files from the command line
-- **Type-safe** — SQL CE types mapped to native Go types (int32, float64, time.Time, etc.)
+- **Pure Go**: zero CGO dependencies, runs on any OS
+- **`database/sql` driver**: use standard Go database interfaces
+- **Engine API**: direct access to tables, schemas, and row iteration
+- **CLI tool** (`sdfutil`): inspect and export SDF files from the command line
+- **Type-safe**: SQL CE types mapped to native Go types (int32, float64, time.Time, etc.)
 
 ## Installation
 
@@ -136,9 +136,9 @@ The library automatically maps table names to internal objectIDs via page mappin
 
 SQL CE stores table data across Leaf pages identified by internal objectIDs. The library automatically maps table names to objectIDs using:
 
-1. **Automatic mapping** — deterministic mapping via TABLE pages and page mapping (MapA/MapB) discovers 60-70% of tables automatically
-2. **Manual override** — set directly via `db.SetObjectMapping(map[string]uint16{...})` for tables that can't be auto-mapped
-3. **Row count matching** — `db.BuildObjectMapping(expectedRowCounts)` matches tables to objectIDs by comparing column counts and row counts against a reference
+1. **Automatic mapping**: deterministic mapping via TABLE pages and page mapping (MapA/MapB) discovers 60-70% of tables automatically
+2. **Manual override**: set directly via `db.SetObjectMapping(map[string]uint16{...})` for tables that can't be auto-mapped
+3. **Row count matching**: `db.BuildObjectMapping(expectedRowCounts)` matches tables to objectIDs by comparing column counts and row counts against a reference
 
 For most databases, automatic mapping is sufficient. Use manual methods only when encountering unmapped tables.
 
@@ -153,11 +153,11 @@ For most databases, automatic mapping is sufficient. Use manual methods only whe
 
 ## Limitations
 
-- **Read-only** — SQL CE files are opened for reading only; no INSERT/UPDATE/DELETE
-- **No WHERE/JOIN** — the SQL parser supports only SELECT with optional column lists (in-memory JOIN engine available via `ExtractControlLayer()`)
-- **No encryption** — encrypted `.sdf` files are detected but not yet decryptable
-- **No LongValue** — large values stored in LongValue (0x50) pages are not yet parsed
-- **Partial auto-mapping** — automatic objectID mapping discovers 60-70% of tables; remaining tables may need manual `WITH OBJECTID` clause or manual mapping
+- **Read-only**: SQL CE files are opened for reading only; no INSERT/UPDATE/DELETE
+- **No WHERE/JOIN**: the SQL parser supports only SELECT with optional column lists (in-memory JOIN engine available via `ExtractControlLayer()`)
+- **No encryption**: encrypted `.sdf` files are detected but not yet decryptable
+- **No LongValue**: large values stored in LongValue (0x50) pages are not yet parsed
+- **Partial auto-mapping**: automatic objectID mapping discovers 60-70% of tables; remaining tables may need manual `WITH OBJECTID` clause or manual mapping
 
 ## SQL CE Version Support
 

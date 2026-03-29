@@ -112,7 +112,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `sdfutil — SQL CE database file utility
+	fmt.Fprintln(os.Stderr, `sdfutil: SQL CE database file utility
 
 Commands:
   info   <file.sdf>                                 Show database header info

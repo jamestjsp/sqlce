@@ -10,11 +10,11 @@ package format
 // All catalog records have colCount=38 and share this fixed-data layout
 // (offsets relative to start of fixed section, after 7-byte bitmap):
 //   fixed[0:2]   ObjectType   (uint16 LE)
-//   fixed[12:14]  ColumnType   (uint16 LE) — SQL CE type ID
-//   fixed[14:16]  ObjectOrdinal(uint16 LE) — 1-based column ordinal
-//   fixed[16:20]  TablePageId  (uint32 LE) — data page ID for tables
-//   fixed[32:34]  ColumnSize   (uint16 LE) — max length in bytes
-//   fixed[38:40]  ColumnPosition(uint16 LE) — physical position within storage area
+//   fixed[12:14]  ColumnType   (uint16 LE): SQL CE type ID
+//   fixed[14:16]  ObjectOrdinal(uint16 LE): 1-based column ordinal
+//   fixed[16:20]  TablePageId  (uint32 LE): data page ID for tables
+//   fixed[32:34]  ColumnSize   (uint16 LE): max length in bytes
+//   fixed[38:40]  ColumnPosition(uint16 LE): physical position within storage area
 //
 // Variable section (2 null-terminated ASCII strings starting 85 bytes after
 // the bitmap, i.e. 93 bytes from record start):

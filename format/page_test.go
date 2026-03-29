@@ -65,13 +65,13 @@ func TestPageReaderCache(t *testing.T) {
 
 	pr := NewPageReader(f, h, 4)
 
-	// First read — cache miss
+	// First read (cache miss)
 	p1, err := pr.ReadPage(5)
 	if err != nil {
 		t.Fatalf("first ReadPage(5): %v", err)
 	}
 
-	// Second read — cache hit (should return identical data)
+	// Second read (cache hit, should return identical data)
 	p2, err := pr.ReadPage(5)
 	if err != nil {
 		t.Fatalf("second ReadPage(5): %v", err)
