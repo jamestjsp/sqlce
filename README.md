@@ -13,7 +13,7 @@ A pure Go library for reading SQL Server Compact Edition (SQL CE) `.sdf` databas
 ## Installation
 
 ```bash
-go get github.com/josephjohnjj/sqlce
+go get github.com/jamestjat/sqlce
 
 ```
 
@@ -25,7 +25,7 @@ go get github.com/josephjohnjj/sqlce
 import (
     "database/sql"
     "fmt"
-    _ "github.com/josephjohnjj/sqlce/driver"
+    _ "github.com/jamestjat/sqlce/driver"
 )
 
 db, _ := sql.Open("sqlce", "path/to/database.sdf")
@@ -44,7 +44,7 @@ for rows.Next() {
 ### Using the Engine API
 
 ```go
-import "github.com/josephjohnjj/sqlce/engine"
+import "github.com/jamestjat/sqlce/engine"
 
 db, _ := engine.Open("path/to/database.sdf")
 defer db.Close()
