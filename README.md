@@ -60,12 +60,15 @@ for _, col := range tbl.Schema().Columns() {
     fmt.Printf("  %s: %s\n", col.Name(), col.Type())
 }
 
-// Iterate rows (requires known objectID)
-ri, _ := tbl.RowsWithObjectID(1305)
+// Iterate rows (automatic objectID mapping)
+ri, _ := tbl.Scan()
 defer ri.Close()
 for ri.Next() {
     fmt.Println(ri.Values())
 }
+
+// Or specify objectID manually if needed
+// ri, _ := tbl.RowsWithObjectID(1305)
 ```
 
 ### Using the CLI
@@ -96,13 +99,16 @@ sdfutil export database.sdf TableName 1305 --format json
 The `database/sql` driver supports a minimal SQL subset:
 
 ```sql
+SELECT * FROM TableName
+SELECT col1, col2 FROM TableName
+SELECT * FROM "Quoted Table"
+SELECT * FROM [Bracketed Table]
+
+-- Optional: specify objectID if automatic mapping fails
 SELECT * FROM TableName WITH OBJECTID 1305
-SELECT col1, col2 FROM TableName WITH OBJECTID 1305
-SELECT * FROM "Quoted Table" WITH OBJECTID 1305
-SELECT * FROM [Bracketed Table] WITH OBJECTID 1305
 ```
 
-The `WITH OBJECTID` clause maps the query to the correct data pages. See [ObjectID Mapping](#objectid-mapping) below.
+The library automatically maps table names to internal objectIDs via page mapping and TABLE page analysis. For tables that can't be auto-mapped, use the `WITH OBJECTID` clause. See [ObjectID Mapping](#objectid-mapping) below.
 
 ## Supported Types
 
@@ -128,11 +134,13 @@ The `WITH OBJECTID` clause maps the query to the correct data pages. See [Object
 
 ## ObjectID Mapping
 
-SQL CE stores table data across Leaf pages identified by internal objectIDs. The library discovers tables and their schemas from the catalog, but mapping table names to objectIDs requires one of:
+SQL CE stores table data across Leaf pages identified by internal objectIDs. The library automatically maps table names to objectIDs using:
 
-1. **Known mapping** — set directly via `db.SetObjectMapping(map[string]uint16{...})`
-2. **Row count matching** — `db.BuildObjectMapping(expectedRowCounts)` matches tables to objectIDs by comparing column counts and row counts against a reference
-3. **Manual discovery** — use `engine.CollectObjectIDInfo()` and `engine.FindTableObjectIDs()` to discover objectIDs
+1. **Automatic mapping** — deterministic mapping via TABLE pages and page mapping (MapA/MapB) discovers 60-70% of tables automatically
+2. **Manual override** — set directly via `db.SetObjectMapping(map[string]uint16{...})` for tables that can't be auto-mapped
+3. **Row count matching** — `db.BuildObjectMapping(expectedRowCounts)` matches tables to objectIDs by comparing column counts and row counts against a reference
+
+For most databases, automatic mapping is sufficient. Use manual methods only when encountering unmapped tables.
 
 ## Packages
 
@@ -146,11 +154,10 @@ SQL CE stores table data across Leaf pages identified by internal objectIDs. The
 ## Limitations
 
 - **Read-only** — SQL CE files are opened for reading only; no INSERT/UPDATE/DELETE
-- **No WHERE/JOIN** — the SQL parser supports only SELECT with optional column lists
-- **ObjectID required** — scanning table data requires knowing the internal objectID
+- **No WHERE/JOIN** — the SQL parser supports only SELECT with optional column lists (in-memory JOIN engine available via `ExtractControlLayer()`)
 - **No encryption** — encrypted `.sdf` files are detected but not yet decryptable
 - **No LongValue** — large values stored in LongValue (0x50) pages are not yet parsed
-- **Partial mapping** — automatic objectID mapping works for ~50% of tables; remaining tables need manual objectID discovery or system catalog parsing
+- **Partial auto-mapping** — automatic objectID mapping discovers 60-70% of tables; remaining tables may need manual `WITH OBJECTID` clause or manual mapping
 
 ## SQL CE Version Support
 
