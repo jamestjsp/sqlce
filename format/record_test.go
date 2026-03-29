@@ -206,6 +206,83 @@ func TestParsePageRecords_Properties(t *testing.T) {
 	}
 }
 
+func TestIOItemsRowCount(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	h, _ := ReadHeader(f)
+	fi, _ := f.Stat()
+	totalPages := int(fi.Size()) / h.PageSize
+	pr := NewPageReader(f, h, 256)
+
+	catalog, err := ReadCatalog(pr, totalPages)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	td := catalog.TableByName("IOItems")
+	if td == nil {
+		t.Fatal("IOItems not found")
+	}
+
+	objIDs := catalog.ObjectMap["IOItems"]
+	if len(objIDs) == 0 {
+		t.Fatal("no objectIDs for IOItems")
+	}
+
+	// IOItems is the largest table (2869 rows across 130 pages).
+	// 5 records span multiple slots via nextChunk pointers; chunk following is required.
+	records, err := ScanTableRecordsMulti(pr, totalPages, objIDs, td.Columns, td.NullBmpExtra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2869 {
+		t.Errorf("IOItems: got %d rows, want 2869", len(records))
+	}
+}
+
+func TestItemInformationNoGhostRecords(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	h, _ := ReadHeader(f)
+	fi, _ := f.Stat()
+	totalPages := int(fi.Size()) / h.PageSize
+	pr := NewPageReader(f, h, 256)
+
+	catalog, err := ReadCatalog(pr, totalPages)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	td := catalog.TableByName("ItemInformation")
+	if td == nil {
+		t.Fatal("ItemInformation not found in catalog")
+	}
+
+	objIDs := catalog.ObjectMap["ItemInformation"]
+	if len(objIDs) == 0 {
+		t.Fatal("no objectIDs for ItemInformation")
+	}
+
+	records, err := ScanTableRecordsMulti(pr, totalPages, objIDs, td.Columns, td.NullBmpExtra)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reference SQLite has 203 rows. Old pattern-matching parser returned 204
+	// (one ghost/deleted record). Slotted page parsing should return exactly 203.
+	if len(records) != 203 {
+		t.Errorf("ItemInformation: got %d rows, want 203", len(records))
+	}
+}
+
 func TestParsePageRecords_BlcModel(t *testing.T) {
 	// Page 467 (obj 1395): 3 rows, 9 cols (5 GUIDs + 4 nvarchars)
 	f, err := os.Open("../data/Depropanizer.sdf")
