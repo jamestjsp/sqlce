@@ -47,6 +47,10 @@ type ColumnDef struct {
 	Ordinal   int // 1-based position
 	MaxLength int // in bytes
 	Position  int
+	Precision uint8
+	Scale     uint8
+	AutoType  uint16 // non-zero for IDENTITY columns
+	Nullable  bool
 }
 
 // TableByName returns the table definition for the given name, or nil.
@@ -64,12 +68,15 @@ const sysObjColCount = 38
 
 // Fixed-section field offsets within __SysObjects records (from start of fixed data).
 const (
-	sysObjOffObjectType    = 0  // uint16: 1=Table, 4=Column
-	sysObjOffColumnType    = 12 // uint16: SQL CE type ID
-	sysObjOffObjectOrdinal = 14 // uint16: column ordinal (1-based)
-	sysObjOffTablePageId   = 16 // uint32: data page ID for table records
-	sysObjOffColumnSize     = 32 // uint16: max length in bytes
-	sysObjOffColumnPosition = 38 // uint16: physical position within storage area
+	sysObjOffObjectType      = 0  // uint16: 1=Table, 4=Column
+	sysObjOffColumnType      = 12 // uint16: SQL CE type ID (lower 16 bits of ObjectCedbInfo)
+	sysObjOffObjectOrdinal   = 14 // uint16: column ordinal (1-based)
+	sysObjOffTablePageId     = 16 // uint32: data page ID for table records
+	sysObjOffColumnSize      = 32 // uint16: max length in bytes
+	sysObjOffColumnPrecision = 34 // uint8: numeric precision
+	sysObjOffColumnScale     = 35 // uint8: numeric scale
+	sysObjOffColumnAutoType  = 36 // uint16: auto-increment type (non-zero = IDENTITY)
+	sysObjOffColumnPosition  = 38 // uint16: physical position within storage area
 )
 
 // Byte offset from bitmap start to variable data (strings).
@@ -89,12 +96,16 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		pageID uint32
 	}
 	type columnEntry struct {
-		table    string
-		column   string
-		typeID   uint16
-		ordinal  int
-		maxLen   int
-		position int
+		table     string
+		column    string
+		typeID    uint16
+		ordinal   int
+		maxLen    int
+		position  int
+		precision uint8
+		scale     uint8
+		autoType  uint16
+		nullable  bool
 	}
 
 	var tables []tableEntry
@@ -184,13 +195,20 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 				key := struct{ t, c string }{owner, name}
 				if !seenCols[key] {
 					seenCols[key] = true
+					// Bit values section: entry[afterCC+5..afterCC+7]
+					// ColumnNullable is bit 4 (5th bit field in __SysObjects schema)
+					nullable := len(entry) > afterCC+5 && entry[afterCC+5]&0x10 != 0
 					columns = append(columns, columnEntry{
-						table:    owner,
-						column:   name,
-						typeID:   le.Uint16(entry[fixedStart+sysObjOffColumnType:]),
-						ordinal:  int(le.Uint16(entry[fixedStart+sysObjOffObjectOrdinal:])),
-						maxLen:   int(le.Uint16(entry[fixedStart+sysObjOffColumnSize:])),
-						position: int(le.Uint16(entry[fixedStart+sysObjOffColumnPosition:])),
+						table:     owner,
+						column:    name,
+						typeID:    le.Uint16(entry[fixedStart+sysObjOffColumnType:]),
+						ordinal:   int(le.Uint16(entry[fixedStart+sysObjOffObjectOrdinal:])),
+						maxLen:    int(le.Uint16(entry[fixedStart+sysObjOffColumnSize:])),
+						position:  int(le.Uint16(entry[fixedStart+sysObjOffColumnPosition:])),
+						precision: entry[fixedStart+sysObjOffColumnPrecision],
+						scale:     entry[fixedStart+sysObjOffColumnScale],
+						autoType:  le.Uint16(entry[fixedStart+sysObjOffColumnAutoType:]),
+						nullable:  nullable,
 					})
 				}
 			}
@@ -233,6 +251,10 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 			Ordinal:   c.ordinal,
 			MaxLength: c.maxLen,
 			Position:  c.position,
+			Precision: c.precision,
+			Scale:     c.scale,
+			AutoType:  c.autoType,
+			Nullable:  c.nullable,
 		})
 	}
 

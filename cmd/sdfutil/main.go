@@ -176,16 +176,24 @@ func cmdSchema(path, tableName string) {
 
 	schema := tbl.Schema()
 	fmt.Printf("Table: %s (%d columns)\n\n", schema.Name(), schema.ColumnCount())
-	fmt.Printf("%-4s %-30s %-20s %-8s %s\n", "#", "Name", "Type", "Length", "Variable")
-	fmt.Printf("%-4s %-30s %-20s %-8s %s\n", "---", "---", "---", "---", "---")
+	fmt.Printf("%-4s %-30s %-20s %-8s %-8s %-5s %s\n", "#", "Name", "Type", "Length", "Null", "Auto", "Extra")
+	fmt.Printf("%-4s %-30s %-20s %-8s %-8s %-5s %s\n", "---", "---", "---", "---", "---", "---", "---")
 
 	for _, col := range schema.Columns() {
-		varStr := ""
-		if col.IsVariable() {
-			varStr = "yes"
+		nullStr := "NO"
+		if col.Nullable() {
+			nullStr = "YES"
 		}
-		fmt.Printf("%-4d %-30s %-20s %-8d %s\n",
-			col.Ordinal(), col.Name(), col.Type(), col.MaxLength(), varStr)
+		autoStr := ""
+		if col.IsAutoIncrement() {
+			autoStr = "YES"
+		}
+		extra := ""
+		if col.Precision() > 0 {
+			extra = fmt.Sprintf("precision=%d scale=%d", col.Precision(), col.Scale())
+		}
+		fmt.Printf("%-4d %-30s %-20s %-8d %-8s %-5s %s\n",
+			col.Ordinal(), col.Name(), col.Type(), col.MaxLength(), nullStr, autoStr, extra)
 	}
 }
 

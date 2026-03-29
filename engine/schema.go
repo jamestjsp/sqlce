@@ -15,6 +15,10 @@ type Column struct {
 	maxLength int
 	ordinal   int
 	variable  bool
+	precision uint8
+	scale     uint8
+	autoType  uint16
+	nullable  bool
 }
 
 // NewColumn creates a Column from a catalog ColumnDef.
@@ -28,6 +32,10 @@ func NewColumn(cd format.ColumnDef) Column {
 		maxLength: cd.MaxLength,
 		ordinal:   cd.Ordinal,
 		variable:  ti.IsVariable,
+		precision: cd.Precision,
+		scale:     cd.Scale,
+		autoType:  cd.AutoType,
+		nullable:  cd.Nullable,
 	}
 }
 
@@ -51,6 +59,18 @@ func (c Column) Ordinal() int { return c.ordinal }
 
 // IsVariable returns true for variable-length types (nvarchar, varbinary, etc.).
 func (c Column) IsVariable() bool { return c.variable }
+
+// Precision returns the numeric precision (for numeric/decimal types).
+func (c Column) Precision() uint8 { return c.precision }
+
+// Scale returns the numeric scale (for numeric/decimal types).
+func (c Column) Scale() uint8 { return c.scale }
+
+// Nullable returns true if the column allows NULL values.
+func (c Column) Nullable() bool { return c.nullable }
+
+// IsAutoIncrement returns true if the column is an IDENTITY column.
+func (c Column) IsAutoIncrement() bool { return c.autoType != 0 }
 
 // Schema provides schema introspection for a table.
 type Schema struct {
