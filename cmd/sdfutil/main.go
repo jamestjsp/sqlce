@@ -195,6 +195,44 @@ func cmdSchema(path, tableName string) {
 		fmt.Printf("%-4d %-30s %-20s %-8d %-8s %-5s %s\n",
 			col.Ordinal(), col.Name(), col.Type(), col.MaxLength(), nullStr, autoStr, extra)
 	}
+
+	cat := db.Catalog()
+	var tableIndexes []string
+	for _, idx := range cat.Indexes {
+		if idx.Table == tableName {
+			u := ""
+			if idx.Unique {
+				u = " UNIQUE"
+			}
+			tableIndexes = append(tableIndexes, fmt.Sprintf("  %s%s (root=%d)", idx.Name, u, idx.Root))
+		}
+	}
+	if len(tableIndexes) > 0 {
+		fmt.Printf("\nIndexes:\n")
+		for _, s := range tableIndexes {
+			fmt.Println(s)
+		}
+	}
+
+	var tableConstraints []string
+	for _, c := range cat.Constraints {
+		if c.Table == tableName {
+			info := fmt.Sprintf("  %s (type=%d)", c.Name, c.Type)
+			if c.TargetTable != "" {
+				info += fmt.Sprintf(" → %s", c.TargetTable)
+			}
+			if c.OnDelete != 0 || c.OnUpdate != 0 {
+				info += fmt.Sprintf(" onDelete=%d onUpdate=%d", c.OnDelete, c.OnUpdate)
+			}
+			tableConstraints = append(tableConstraints, info)
+		}
+	}
+	if len(tableConstraints) > 0 {
+		fmt.Printf("\nConstraints:\n")
+		for _, s := range tableConstraints {
+			fmt.Println(s)
+		}
+	}
 }
 
 func cmdDump(path, tableName string, objectID uint16) {

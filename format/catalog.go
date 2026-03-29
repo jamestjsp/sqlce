@@ -29,8 +29,30 @@ import (
 
 // Catalog holds the parsed schema metadata for all tables in the database.
 type Catalog struct {
-	Tables    []TableDef
-	ObjectMap map[string][]uint16
+	Tables      []TableDef
+	Indexes     []IndexDef
+	Constraints []ConstraintDef
+	ObjectMap   map[string][]uint16
+}
+
+// IndexDef describes an index on a table.
+type IndexDef struct {
+	Table      string
+	Name       string
+	Root       uint32 // page ID of index B-tree root
+	Unique     bool
+	NullOption uint16
+}
+
+// ConstraintDef describes a constraint on a table.
+type ConstraintDef struct {
+	Table       string
+	Name        string
+	Type        uint32 // constraint type code
+	OnDelete    uint32 // referential action on delete
+	OnUpdate    uint32 // referential action on update
+	IndexName   string // associated index name
+	TargetTable string // target table for foreign keys
 }
 
 // TableDef describes a single table.
@@ -77,6 +99,11 @@ const (
 	sysObjOffColumnScale     = 35 // uint8: numeric scale
 	sysObjOffColumnAutoType  = 36 // uint16: auto-increment type (non-zero = IDENTITY)
 	sysObjOffColumnPosition  = 38 // uint16: physical position within storage area
+	sysObjOffIndexRoot       = 40 // uint32: index B-tree root page ID
+	sysObjOffIndexNullOption = 44 // uint16: null handling option
+	sysObjOffConstraintType  = 46 // uint32: constraint type code
+	sysObjOffConstraintOnDel = 50 // uint32: referential action on delete
+	sysObjOffConstraintOnUpd = 54 // uint32: referential action on update
 )
 
 // Byte offset from bitmap start to variable data (strings).
@@ -110,8 +137,11 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 
 	var tables []tableEntry
 	var columns []columnEntry
+	var indexes []IndexDef
+	var constraints []ConstraintDef
 	seenTables := make(map[string]bool)
 	seenCols := make(map[struct{ t, c string }]bool)
+	seenConstraints := make(map[struct{ t, c string }]bool)
 
 	// Build objectID → file page number mapping for Leaf pages.
 	// nextChunk pointers use logical page IDs (= objectID at page[4:6]).
@@ -211,6 +241,51 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 						nullable:  nullable,
 					})
 				}
+			case 8: // Constraint/Index
+				if strings.HasPrefix(owner, "__Sys") {
+					continue
+				}
+				key := struct{ t, c string }{owner, name}
+				if seenConstraints[key] {
+					continue
+				}
+				seenConstraints[key] = true
+
+				if fixedStart+sysObjOffConstraintOnUpd+4 > len(entry) {
+					continue
+				}
+
+				cType := le.Uint32(entry[fixedStart+sysObjOffConstraintType:])
+				indexRoot := le.Uint32(entry[fixedStart+sysObjOffIndexRoot:])
+				indexUnique := len(entry) > afterCC+5 && entry[afterCC+5]&0x80 != 0
+
+				if indexRoot != 0 {
+					indexes = append(indexes, IndexDef{
+						Table:      owner,
+						Name:       name,
+						Root:       indexRoot,
+						Unique:     indexUnique,
+						NullOption: le.Uint16(entry[fixedStart+sysObjOffIndexNullOption:]),
+					})
+				}
+
+				if cType != 0 {
+					cd := ConstraintDef{
+						Table:    owner,
+						Name:     name,
+						Type:     cType,
+						OnDelete: le.Uint32(entry[fixedStart+sysObjOffConstraintOnDel:]),
+						OnUpdate: le.Uint32(entry[fixedStart+sysObjOffConstraintOnUpd:]),
+					}
+					strs := readStrings(entry, varStart, 8)
+					if len(strs) >= 4 {
+						cd.IndexName = strs[2]
+					}
+					if len(strs) >= 6 {
+						cd.TargetTable = strs[5]
+					}
+					constraints = append(constraints, cd)
+				}
 			}
 		}
 	}
@@ -272,7 +347,7 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		return tableDefs[i].Name < tableDefs[j].Name
 	})
 
-	return &Catalog{Tables: tableDefs, ObjectMap: objectMap}, nil
+	return &Catalog{Tables: tableDefs, Indexes: indexes, Constraints: constraints, ObjectMap: objectMap}, nil
 }
 
 type dataSlot struct {
@@ -387,6 +462,28 @@ func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, objIDToFi
 		buf = append(buf, contData[4:]...)
 	}
 	return buf
+}
+
+// readStrings reads up to max consecutive null-terminated ASCII strings from data at offset.
+func readStrings(data []byte, offset, max int) []string {
+	n := len(data)
+	var result []string
+	pos := offset
+	for len(result) < max && pos < n {
+		start := pos
+		for pos < n && data[pos] != 0 {
+			if data[pos] < 32 || data[pos] >= 127 {
+				return result
+			}
+			pos++
+		}
+		if pos >= n || pos == start {
+			return result
+		}
+		result = append(result, string(data[start:pos]))
+		pos++ // skip null terminator
+	}
+	return result
 }
 
 // readTwoStrings reads two consecutive null-terminated ASCII strings from data at offset.
