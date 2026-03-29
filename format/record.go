@@ -3,6 +3,7 @@ package format
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 )
 
 type Record struct {
@@ -25,15 +26,8 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 	}
 
 	objID := PageObjectID(page)
-	recordCount := int(page[0x14])
-	if recordCount == 0 {
-		return nil, nil
-	}
 
-	colCount := int(binary.LittleEndian.Uint16(page[0x1C:]))
-	if colCount == 0 || colCount > 500 {
-		colCount = len(columns)
-	}
+	colCount := len(columns)
 	if colCount == 0 {
 		return nil, nil
 	}
@@ -44,13 +38,16 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 	for i, c := range columns {
 		ti := LookupType(c.TypeID)
 		if c.TypeID == TypeBit {
-			bitCols = append(bitCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
+			bitCols = append(bitCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID, position: c.Position})
 		} else if ti.IsVariable {
-			varCols = append(varCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID})
+			varCols = append(varCols, colLayout{schemaIdx: i, size: 0, typeID: c.TypeID, position: c.Position})
 		} else {
-			fixedCols = append(fixedCols, colLayout{schemaIdx: i, size: ti.FixedSize, typeID: c.TypeID})
+			fixedCols = append(fixedCols, colLayout{schemaIdx: i, size: ti.FixedSize, typeID: c.TypeID, position: c.Position})
 		}
 	}
+	sort.SliceStable(fixedCols, func(i, j int) bool { return fixedCols[i].position < fixedCols[j].position })
+	sort.SliceStable(varCols, func(i, j int) bool { return varCols[i].position < varCols[j].position })
+	sort.SliceStable(bitCols, func(i, j int) bool { return bitCols[i].position < bitCols[j].position })
 
 	pr := &PageRecords{
 		ObjectID:    objID,
@@ -62,30 +59,30 @@ func ParsePageRecords(page []byte, columns []ColumnDef, nullBmpExtra ...int) (*P
 		bmpExtra = nullBmpExtra[0]
 	}
 
-	// Find record starts by scanning for [00000000][colCount LE32] pattern.
-	ccBytes := [4]byte{byte(colCount), byte(colCount >> 8), byte(colCount >> 16), byte(colCount >> 24)}
-	var recOffsets []int
-	for i := 0x18; i < len(page)-8 && len(recOffsets) < recordCount; i++ {
-		if page[i] == 0 && page[i+1] == 0 && page[i+2] == 0 && page[i+3] == 0 &&
-			page[i+4] == ccBytes[0] && page[i+5] == ccBytes[1] && page[i+6] == ccBytes[2] && page[i+7] == ccBytes[3] {
-			recOffsets = append(recOffsets, i)
+	slots := readDataPageSlots(page)
+	for _, slot := range slots {
+		if slot.flags&1 != 0 {
+			continue
 		}
-	}
-	if len(recOffsets) == 0 {
-		recOffsets = []int{0x18}
-	}
-
-	for _, offset := range recOffsets {
-		if offset+9 > len(page) {
-			break
+		entry := slot.data
+		if len(entry) < 8 {
+			continue
 		}
-		r, _, err := parseOneRecord(page, offset, fixedCols, varCols, bitCols, len(columns), bmpExtra)
+		entryColCount := int(binary.LittleEndian.Uint32(entry[4:8]))
+		if entryColCount != colCount {
+			continue
+		}
+		r, _, err := parseOneRecord(entry, 0, fixedCols, varCols, bitCols, len(columns), bmpExtra)
 		if err != nil {
 			continue
 		}
 		if r != nil {
 			pr.Records = append(pr.Records, *r)
 		}
+	}
+
+	if len(pr.Records) == 0 {
+		return nil, nil
 	}
 
 	return pr, nil
@@ -95,6 +92,7 @@ type colLayout struct {
 	schemaIdx int
 	size      int
 	typeID    uint16
+	position  int
 }
 
 func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLayout, totalCols int, nullBmpExtra int) (*Record, int, error) {
@@ -147,10 +145,7 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLa
 	}
 
 	if len(varCols) > 0 && offset < len(page)-4 {
-		// Scan forward to find the 0x80 variable section flag
-		for offset < len(page)-4 && page[offset] != 0x80 {
-			offset++
-		}
+		offset++ // skip 1-byte separator between fixed data and variable section
 		offset = parseVariableColumns(page, offset, varCols, values)
 	}
 
@@ -255,6 +250,38 @@ func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, c
 
 	var records []Record
 	for pg := 0; pg < totalPages; pg++ {
+		page, err := pr.ReadPage(pg)
+		if err != nil {
+			return nil, err
+		}
+		pt := ClassifyPage(page)
+		if pt != PageLeaf && pt != PageData {
+			continue
+		}
+		if !idSet[PageObjectID(page)] {
+			continue
+		}
+
+		parsed, err := ParsePageRecords(page, columns, nullBmpExtra...)
+		if err != nil {
+			continue
+		}
+		if parsed != nil {
+			records = append(records, parsed.Records...)
+		}
+	}
+
+	return records, nil
+}
+
+func ScanTableRecordsPages(pr *PageReader, pages []int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	idSet := make(map[uint16]bool, len(objectIDs))
+	for _, id := range objectIDs {
+		idSet[id] = true
+	}
+
+	var records []Record
+	for _, pg := range pages {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
 			return nil, err

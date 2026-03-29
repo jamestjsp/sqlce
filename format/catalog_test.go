@@ -185,6 +185,55 @@ func TestCatalogBlocksColumns(t *testing.T) {
 }
 
 
+func TestCatalogColumnPosition(t *testing.T) {
+	f, err := os.Open("../data/Depropanizer.sdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h, _ := ReadHeader(f)
+	fi, _ := f.Stat()
+	pr := NewPageReader(f, h, 128)
+	cat, _ := ReadCatalog(pr, int(fi.Size())/h.PageSize)
+
+	blocks := cat.TableByName("Blocks")
+	if blocks == nil {
+		t.Fatal("Blocks table not found")
+	}
+
+	colByName := make(map[string]ColumnDef)
+	for _, c := range blocks.Columns {
+		colByName[c.Name] = c
+	}
+
+	cases := []struct {
+		name string
+		pos  int
+	}{
+		{"BlockIdentifier", 0},
+		{"Name", 0},
+		{"Description", 1},
+		{"UseSameHorizonAsModel", 0},
+		{"ModelHorizonInSeconds", 16},
+		{"PlotIntervalInSeconds", 20},
+		{"ResponsePlotType", 32},
+		{"FormulaString", 2},
+		{"IsFormulaValid", 1},
+		{"GainUpdateToleranceMin", 40},
+		{"GainUpdateTolerancePercent", 48},
+	}
+	for _, tc := range cases {
+		c, ok := colByName[tc.name]
+		if !ok {
+			t.Errorf("column %s not found", tc.name)
+			continue
+		}
+		if c.Position != tc.pos {
+			t.Errorf("%s Position = %d, want %d", tc.name, c.Position, tc.pos)
+		}
+	}
+}
+
 func TestCatalogRecoveredColumns(t *testing.T) {
 	f, err := os.Open("../data/Depropanizer.sdf")
 	if err != nil {

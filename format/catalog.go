@@ -14,6 +14,7 @@ package format
 //   fixed[14:16]  ObjectOrdinal(uint16 LE) — 1-based column ordinal
 //   fixed[16:20]  TablePageId  (uint32 LE) — data page ID for tables
 //   fixed[32:34]  ColumnSize   (uint16 LE) — max length in bytes
+//   fixed[38:40]  ColumnPosition(uint16 LE) — physical position within storage area
 //
 // Variable section (2 null-terminated ASCII strings starting 85 bytes after
 // the bitmap, i.e. 93 bytes from record start):
@@ -45,6 +46,7 @@ type ColumnDef struct {
 	TypeID    uint16
 	Ordinal   int // 1-based position
 	MaxLength int // in bytes
+	Position  int
 }
 
 // TableByName returns the table definition for the given name, or nil.
@@ -66,7 +68,8 @@ const (
 	sysObjOffColumnType    = 12 // uint16: SQL CE type ID
 	sysObjOffObjectOrdinal = 14 // uint16: column ordinal (1-based)
 	sysObjOffTablePageId   = 16 // uint32: data page ID for table records
-	sysObjOffColumnSize    = 32 // uint16: max length in bytes
+	sysObjOffColumnSize     = 32 // uint16: max length in bytes
+	sysObjOffColumnPosition = 38 // uint16: physical position within storage area
 )
 
 // Byte offset from bitmap start to variable data (strings).
@@ -86,11 +89,12 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 		pageID uint32
 	}
 	type columnEntry struct {
-		table   string
-		column  string
-		typeID  uint16
-		ordinal int
-		maxLen  int
+		table    string
+		column   string
+		typeID   uint16
+		ordinal  int
+		maxLen   int
+		position int
 	}
 
 	var tables []tableEntry
@@ -181,11 +185,12 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 				if !seenCols[key] {
 					seenCols[key] = true
 					columns = append(columns, columnEntry{
-						table:   owner,
-						column:  name,
-						typeID:  le.Uint16(entry[fixedStart+sysObjOffColumnType:]),
-						ordinal: int(le.Uint16(entry[fixedStart+sysObjOffObjectOrdinal:])),
-						maxLen:  int(le.Uint16(entry[fixedStart+sysObjOffColumnSize:])),
+						table:    owner,
+						column:   name,
+						typeID:   le.Uint16(entry[fixedStart+sysObjOffColumnType:]),
+						ordinal:  int(le.Uint16(entry[fixedStart+sysObjOffObjectOrdinal:])),
+						maxLen:   int(le.Uint16(entry[fixedStart+sysObjOffColumnSize:])),
+						position: int(le.Uint16(entry[fixedStart+sysObjOffColumnPosition:])),
 					})
 				}
 			}
@@ -193,11 +198,29 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 	}
 
 	// Build objectMap: tableName → leaf page objectIDs
-	parentToLeafIDs := scanLeafPagesByParent(pr, totalPages)
+	// Primary: read TABLE pages via PageMapping for deterministic resolution
+	pm, pmErr := BuildPageMapping(pr)
 	objectMap := make(map[string][]uint16, len(tables))
-	for _, t := range tables {
-		if leafIDs, ok := parentToLeafIDs[uint16(t.pageID)]; ok {
-			objectMap[t.name] = leafIDs
+	if pmErr == nil {
+		for _, t := range tables {
+			if t.pageID == 0 {
+				continue
+			}
+			ids := readTablePageLeafIDs(pr, pm, int(t.pageID))
+			if len(ids) > 0 {
+				objectMap[t.name] = ids
+			}
+		}
+	}
+	if len(objectMap) < len(tables) {
+		parentToLeafIDs := scanLeafPagesByParent(pr, totalPages)
+		for _, t := range tables {
+			if _, ok := objectMap[t.name]; ok {
+				continue
+			}
+			if leafIDs, ok := parentToLeafIDs[uint16(t.pageID)]; ok {
+				objectMap[t.name] = leafIDs
+			}
 		}
 	}
 
@@ -209,6 +232,7 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 			TypeID:    c.typeID,
 			Ordinal:   c.ordinal,
 			MaxLength: c.maxLen,
+			Position:  c.position,
 		})
 	}
 
@@ -506,6 +530,69 @@ func findNamePairs(page []byte, pageNum int) []CatalogEntry {
 		}
 	}
 	return results
+}
+
+func readTablePageLeafIDs(pr *PageReader, pm *PageMapping, tablePageLogID int) []uint16 {
+	fp, ok := pm.FilePageNum(tablePageLogID)
+	if !ok {
+		return nil
+	}
+	page, err := pr.ReadPage(fp)
+	if err != nil || ClassifyPage(page) != PageData {
+		return nil
+	}
+	if len(page) < 24 {
+		return nil
+	}
+
+	le := binary.LittleEndian
+	dataPageCount := int(le.Uint32(page[16:20]))
+	flags := le.Uint32(page[20:24])
+
+	listOffset := 24
+	if flags == 1 {
+		listOffset = 0x70
+		if len(page) < listOffset {
+			return nil
+		}
+		dataPageCount = int(le.Uint32(page[listOffset-8:]))
+		flags = le.Uint32(page[listOffset-4:])
+	}
+	if flags != 0 || dataPageCount <= 0 || dataPageCount > 10000 {
+		return nil
+	}
+
+	seen := make(map[uint16]bool)
+	var ids []uint16
+	for i := 0; i < dataPageCount; i++ {
+		off := listOffset + (i/3)*8
+		if off+8 > len(page) {
+			break
+		}
+		qw := le.Uint64(page[off:])
+		logID := int((qw >> (uint(i%3) * 20)) & 0xFFFFF)
+		if logID == 0 {
+			continue
+		}
+
+		leafFP, ok := pm.FilePageNum(logID)
+		if !ok {
+			continue
+		}
+		leafPage, err := pr.ReadPage(leafFP)
+		if err != nil {
+			continue
+		}
+		if ClassifyPage(leafPage) != PageLeaf {
+			continue
+		}
+		objID := PageObjectID(leafPage)
+		if !seen[objID] {
+			seen[objID] = true
+			ids = append(ids, objID)
+		}
+	}
+	return ids
 }
 
 func scanLeafPagesByParent(pr *PageReader, totalPages int) map[uint16][]uint16 {

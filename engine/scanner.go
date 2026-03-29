@@ -13,6 +13,7 @@ type TableScanner struct {
 	totalPages int
 	table      *format.TableDef
 	objectIDs  []uint16
+	pages      []int
 }
 
 // ScanResult holds the scanned rows from a table.
@@ -32,9 +33,18 @@ func NewTableScanner(pr *format.PageReader, totalPages int, table *format.TableD
 	}
 }
 
-// Scan reads all rows from the table's Leaf pages and returns typed values.
+func (ts *TableScanner) SetPages(pages []int) {
+	ts.pages = pages
+}
+
 func (ts *TableScanner) Scan() (*ScanResult, error) {
-	records, err := format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, ts.table.NullBmpExtra)
+	var records []format.Record
+	var err error
+	if len(ts.pages) > 0 {
+		records, err = format.ScanTableRecordsPages(ts.reader, ts.pages, ts.objectIDs, ts.table.Columns, ts.table.NullBmpExtra)
+	} else {
+		records, err = format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, ts.table.NullBmpExtra)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("scanning table %s: %w", ts.table.Name, err)
 	}
