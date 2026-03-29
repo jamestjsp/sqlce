@@ -124,6 +124,9 @@ func ConvertValue(data []byte, typeID uint16) (any, error) {
 		return string(data), nil
 
 	case format.TypeNText:
+		if len(data) > 16 && isUTF16LE(data) {
+			return decodeUTF16LE(data), nil
+		}
 		out := make([]byte, len(data))
 		copy(out, data)
 		return out, nil
