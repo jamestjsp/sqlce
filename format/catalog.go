@@ -322,7 +322,16 @@ func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, objIDToFi
 	buf := make([]byte, len(firstEntry))
 	copy(buf, firstEntry)
 
+	const maxRecordSize = 64 * 1024 // 64KB reasonable limit for multi-slot records
+	visited := make(map[uint32]bool)
+
 	for i := 0; i < 20 && nextChunk != 0; i++ {
+		// Detect cycles in chunk chain
+		if visited[nextChunk] {
+			break
+		}
+		visited[nextChunk] = true
+
 		logicalPageID := uint16(nextChunk >> 12)
 		entryIdx := int(nextChunk & 0xFFF)
 
@@ -347,6 +356,12 @@ func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, objIDToFi
 		}
 
 		nextChunk = binary.LittleEndian.Uint32(contData[:4])
+		
+		// Prevent unbounded memory allocation
+		if len(buf)+len(contData[4:]) > maxRecordSize {
+			break
+		}
+		
 		buf = append(buf, contData[4:]...)
 	}
 	return buf
