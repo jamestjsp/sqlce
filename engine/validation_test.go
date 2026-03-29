@@ -299,6 +299,9 @@ func TestDataValidation(t *testing.T) {
 		}
 		t.Logf("Broad row count validation: %d matched, %d mismatched out of %d mapped tables",
 			matched, mismatched, len(mapping))
+		if mismatched > 0 {
+			t.Errorf("row count mismatches: %d (expected 0)", mismatched)
+		}
 	})
 
 	// Test value types: check that GUID, datetime, and numeric conversions work

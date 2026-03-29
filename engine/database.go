@@ -97,7 +97,7 @@ func buildPageIndex(pr *format.PageReader, totalPages int) (map[uint16][]int, er
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		pt := format.ClassifyPage(page)
 		if pt != format.PageLeaf && pt != format.PageData {
