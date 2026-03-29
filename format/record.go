@@ -140,7 +140,7 @@ func parseOneRecord(page []byte, offset int, fixedCols, varCols, bitCols []colLa
 	if len(varCols) > 0 {
 		entryEnd := len(page)
 		for pos := entryEnd - 1; pos > offset; pos-- {
-			if page[pos] == 0x80 && pos > offset && page[pos-1] == 0x00 {
+			if page[pos] == 0x80 && pos > 0 && page[pos-1] == 0x00 {
 				actualFixed := (pos - 1) - offset
 				if actualFixed > 0 && actualFixed < fixedDataSize {
 					fixedDataSize = actualFixed

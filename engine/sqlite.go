@@ -81,7 +81,6 @@ func ExportToSQLite(db *Database) (*sql.DB, error) {
 			continue
 		}
 		if err := tx.Commit(); err != nil {
-			tx.Rollback()
 			fmt.Fprintf(os.Stderr, "  export skip %s: commit: %v\n", name, err)
 		}
 	}
