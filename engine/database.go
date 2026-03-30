@@ -35,11 +35,19 @@ func Open(path string) (*Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
-
-	return openFromFile(f)
+	return openFromFile(f, "")
 }
 
-func openFromFile(f *os.File) (*Database, error) {
+// OpenWithPassword opens an encrypted SQL CE database with the given password.
+func OpenWithPassword(path, password string) (*Database, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	return openFromFile(f, password)
+}
+
+func openFromFile(f *os.File, password string) (*Database, error) {
 	h, err := format.ReadHeader(f)
 	if err != nil {
 		f.Close()
@@ -52,8 +60,36 @@ func openFromFile(f *os.File) (*Database, error) {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 
-	totalPages := int(fi.Size()) / h.PageSize
-	pr := format.NewPageReader(f, h, 256)
+	filePages := int(fi.Size()) / h.PageSize
+	totalPages := filePages
+	if h.PageCount > 0 && int(h.PageCount) < filePages {
+		totalPages = int(h.PageCount)
+	}
+
+	var pr *format.PageReader
+	if password != "" {
+		enc, err := format.DetectEncryption(f)
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("detecting encryption: %w", err)
+		}
+		if !enc.Encrypted {
+			pr = format.NewPageReader(f, h, 256)
+		} else {
+			dec, err := format.NewDecryptor(enc.Algorithm, password)
+			if err != nil {
+				f.Close()
+				return nil, fmt.Errorf("creating decryptor: %w", err)
+			}
+			if err := format.ValidateDecryptor(f, h, dec); err != nil {
+				f.Close()
+				return nil, fmt.Errorf("password validation: %w", err)
+			}
+			pr = format.NewPageReaderWithDecryptor(f, h, 256, dec)
+		}
+	} else {
+		pr = format.NewPageReader(f, h, 256)
+	}
 
 	catalog, err := format.ReadCatalog(pr, totalPages)
 	if err != nil {

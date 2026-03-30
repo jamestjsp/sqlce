@@ -47,54 +47,66 @@ func TestGUIDTooShort(t *testing.T) {
 	}
 }
 
-func TestOLEDateTimeParse(t *testing.T) {
+func TestDateTimeParse(t *testing.T) {
 	tests := []struct {
 		name   string
-		days   float64
+		days   int32
+		ticks  int32
 		expect time.Time
 	}{
 		{
-			name:   "OLE epoch",
+			name:   "epoch 1900-01-01",
 			days:   0,
-			expect: time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC),
-		},
-		{
-			name:   "Jan 1 1900",
-			days:   2,
+			ticks:  0,
 			expect: time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC),
 		},
 		{
 			name:   "Jan 1 2000",
-			days:   36526,
+			days:   36524,
+			ticks:  0,
 			expect: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
 		},
 		{
 			name:   "Jan 1 2000 12:00:00",
-			days:   36526.5,
+			days:   36524,
+			ticks:  12 * 60 * 60 * 300,
 			expect: time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name:   "pre-1900",
+			days:   -365,
+			ticks:  0,
+			expect: time.Date(1899, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:   "max time 23:59:59.997",
+			days:   0,
+			ticks:  25919999,
+			expect: time.Date(1900, 1, 1, 23, 59, 59, 997000000, time.UTC),
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := make([]byte, 8)
-			binary.LittleEndian.PutUint64(b, math.Float64bits(tc.days))
+			binary.LittleEndian.PutUint32(b[0:4], uint32(tc.days))
+			binary.LittleEndian.PutUint32(b[4:8], uint32(tc.ticks))
 
-			got, err := ParseOLEDateTime(b)
+			got, err := ParseDateTime(b)
 			if err != nil {
-				t.Fatalf("ParseOLEDateTime: %v", err)
+				t.Fatalf("ParseDateTime: %v", err)
 			}
 
 			diff := got.Sub(tc.expect)
-			if diff < -time.Second || diff > time.Second {
+			if diff < -4*time.Millisecond || diff > 4*time.Millisecond {
 				t.Errorf("got %v, want %v (diff %v)", got, tc.expect, diff)
 			}
 		})
 	}
 }
 
-func TestOLEDateTimeTooShort(t *testing.T) {
-	_, err := ParseOLEDateTime(make([]byte, 4))
+func TestDateTimeTooShort(t *testing.T) {
+	_, err := ParseDateTime(make([]byte, 4))
 	if err == nil {
 		t.Error("expected error for short input")
 	}

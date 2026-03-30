@@ -35,30 +35,25 @@ func ParseGUID(b []byte) (string, error) {
 	), nil
 }
 
-// OLE Automation epoch: December 30, 1899 00:00:00 UTC.
-var oleEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+// SQL Server / SQL CE datetime epoch: January 1, 1900 00:00:00 UTC.
+var datetimeEpoch = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// ParseOLEDateTime converts an 8-byte OLE Automation date (float64, little-endian)
-// to a Go time.Time.
+// ParseDateTime converts an 8-byte SQL CE datetime to a Go time.Time.
 //
-// The integer part is days since 1899-12-30, the fractional part is time of day.
-func ParseOLEDateTime(b []byte) (time.Time, error) {
+// Format: two signed int32 little-endian values:
+//
+//	bytes 0-3: days since 1900-01-01 (negative for pre-1900)
+//	bytes 4-7: ticks since midnight (1 tick = 1/300th second)
+func ParseDateTime(b []byte) (time.Time, error) {
 	if len(b) < 8 {
 		return time.Time{}, fmt.Errorf("datetime requires 8 bytes, got %d", len(b))
 	}
-	bits := binary.LittleEndian.Uint64(b)
-	days := math.Float64frombits(bits)
+	days := int32(binary.LittleEndian.Uint32(b[0:4]))
+	ticks := int32(binary.LittleEndian.Uint32(b[4:8]))
 
-	if math.IsNaN(days) || math.IsInf(days, 0) {
-		return time.Time{}, fmt.Errorf("invalid datetime value: %v", days)
-	}
-
-	wholeDays := int(days)
-	fracDay := days - float64(wholeDays)
-
-	t := oleEpoch.AddDate(0, 0, wholeDays)
-	ns := int64(fracDay * 24 * 60 * 60 * 1e9)
-	t = t.Add(time.Duration(ns))
+	t := datetimeEpoch.AddDate(0, 0, int(days))
+	ms := int64(ticks) * 1000 / 300
+	t = t.Add(time.Duration(ms) * time.Millisecond)
 
 	return t, nil
 }
@@ -117,7 +112,7 @@ func ConvertValue(data []byte, typeID uint16) (any, error) {
 		return int64(le.Uint64(data)), nil
 
 	case format.TypeDatetime:
-		return ParseOLEDateTime(data)
+		return ParseDateTime(data)
 
 	case format.TypeUniqueIdentifier:
 		return ParseGUID(data)
@@ -129,6 +124,9 @@ func ConvertValue(data []byte, typeID uint16) (any, error) {
 		return string(data), nil
 
 	case format.TypeNText:
+		if len(data) > 16 && isUTF16LE(data) {
+			return decodeUTF16LE(data), nil
+		}
 		out := make([]byte, len(data))
 		copy(out, data)
 		return out, nil

@@ -138,7 +138,7 @@ func cmdInfo(path string) {
 	}
 
 	fmt.Printf("File:       %s\n", path)
-	fmt.Printf("Version:    %s\n", h.Version)
+	fmt.Printf("Version:    %s\n", h.VersionString())
 	fmt.Printf("Page size:  %d bytes\n", h.PageSize)
 	fmt.Printf("Pages:      %d\n", db.TotalPages())
 	fmt.Printf("File size:  %d bytes\n", db.TotalPages()*h.PageSize)
@@ -176,16 +176,62 @@ func cmdSchema(path, tableName string) {
 
 	schema := tbl.Schema()
 	fmt.Printf("Table: %s (%d columns)\n\n", schema.Name(), schema.ColumnCount())
-	fmt.Printf("%-4s %-30s %-20s %-8s %s\n", "#", "Name", "Type", "Length", "Variable")
-	fmt.Printf("%-4s %-30s %-20s %-8s %s\n", "---", "---", "---", "---", "---")
+	fmt.Printf("%-4s %-30s %-20s %-8s %-8s %-5s %s\n", "#", "Name", "Type", "Length", "Null", "Auto", "Extra")
+	fmt.Printf("%-4s %-30s %-20s %-8s %-8s %-5s %s\n", "---", "---", "---", "---", "---", "---", "---")
 
 	for _, col := range schema.Columns() {
-		varStr := ""
-		if col.IsVariable() {
-			varStr = "yes"
+		nullStr := "NO"
+		if col.Nullable() {
+			nullStr = "YES"
 		}
-		fmt.Printf("%-4d %-30s %-20s %-8d %s\n",
-			col.Ordinal(), col.Name(), col.Type(), col.MaxLength(), varStr)
+		autoStr := ""
+		if col.IsAutoIncrement() {
+			autoStr = "YES"
+		}
+		extra := ""
+		if col.Precision() > 0 {
+			extra = fmt.Sprintf("precision=%d scale=%d", col.Precision(), col.Scale())
+		}
+		fmt.Printf("%-4d %-30s %-20s %-8d %-8s %-5s %s\n",
+			col.Ordinal(), col.Name(), col.Type(), col.MaxLength(), nullStr, autoStr, extra)
+	}
+
+	cat := db.Catalog()
+	var tableIndexes []string
+	for _, idx := range cat.Indexes {
+		if idx.Table == tableName {
+			u := ""
+			if idx.Unique {
+				u = " UNIQUE"
+			}
+			tableIndexes = append(tableIndexes, fmt.Sprintf("  %s%s (root=%d)", idx.Name, u, idx.Root))
+		}
+	}
+	if len(tableIndexes) > 0 {
+		fmt.Printf("\nIndexes:\n")
+		for _, s := range tableIndexes {
+			fmt.Println(s)
+		}
+	}
+
+	var tableConstraints []string
+	for _, c := range cat.Constraints {
+		if c.Table == tableName {
+			info := fmt.Sprintf("  %s (type=%d)", c.Name, c.Type)
+			if c.TargetTable != "" {
+				info += fmt.Sprintf(" → %s", c.TargetTable)
+			}
+			if c.OnDelete != 0 || c.OnUpdate != 0 {
+				info += fmt.Sprintf(" onDelete=%d onUpdate=%d", c.OnDelete, c.OnUpdate)
+			}
+			tableConstraints = append(tableConstraints, info)
+		}
+	}
+	if len(tableConstraints) > 0 {
+		fmt.Printf("\nConstraints:\n")
+		for _, s := range tableConstraints {
+			fmt.Println(s)
+		}
 	}
 }
 

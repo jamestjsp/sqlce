@@ -1,7 +1,11 @@
 // Package format provides low-level binary parsing of SQL Server Compact Edition (.sdf) files.
 package format
 
-// SDF file magic number (little-endian u32 of bytes EB 6D 87 AE).
+// Magic is the legacy constant kept for backward compatibility.
+// Offset 0x00 is actually a per-database identifier (checksum/DBID),
+// NOT a fixed format signature. Use version field at 0x10 for format identification.
+//
+// Deprecated: do not use for file validation.
 const Magic uint32 = 0xAE876DEB
 
 // Default page size for SQL CE databases (4 KB).
@@ -9,12 +13,15 @@ const DefaultPageSize = 4096
 
 // Header field offsets within page 0.
 const (
-	offsetMagic      = 0x00
-	offsetVersion    = 0x10
-	offsetPageCount  = 0x18
-	offsetLCID       = 0x28
-	offsetEncryption = 0x30
+	offsetDatabaseID  = 0x00
+	offsetReserved    = 0x04 // bytes 4-7: always zero in valid SDF files
+	offsetVersion     = 0x10
+	offsetPageCount   = 0x18
+	offsetLCID        = 0x28
+	offsetEncryption  = 0x30
+	offsetBuildNumber = 0x34
 )
+
 
 // Minimum header size required to parse all known fields.
 const headerSize = 0x44

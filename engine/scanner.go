@@ -19,8 +19,9 @@ type TableScanner struct {
 
 // ScanResult holds the scanned rows from a table.
 type ScanResult struct {
-	Columns []format.ColumnDef
-	Rows    [][]any
+	Columns  []format.ColumnDef
+	Rows     [][]any
+	Warnings []error
 }
 
 // NewTableScanner creates a scanner for the given table.
@@ -48,23 +49,27 @@ func (ts *TableScanner) Scan() (*ScanResult, error) {
 		}
 	}
 
-	var records []format.Record
-	var err error
+	var scanOut format.ScanOutput
 	if len(ts.pages) > 0 {
-		records, err = format.ScanTableRecordsPages(ts.reader, ts.pages, ts.objectIDs, ts.table.Columns, bmpExtra)
+		scanOut = format.ScanTableRecordsPagesEx(ts.reader, ts.pages, ts.objectIDs, ts.table.Columns, bmpExtra)
 	} else {
-		records, err = format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, bmpExtra)
+		scanOut = format.ScanTableRecordsMultiEx(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, bmpExtra)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("scanning table %s: %w", ts.table.Name, err)
+	records := scanOut.Records
+
+	// Build page mapping for LOB resolution if table has ntext/image columns
+	var pm *format.PageMapping
+	if hasLOBColumns(ts.table.Columns) {
+		pm, _ = format.BuildPageMapping(ts.reader)
 	}
 
 	result := &ScanResult{
-		Columns: ts.table.Columns,
+		Columns:  ts.table.Columns,
+		Warnings: scanOut.Warnings,
 	}
 
 	for _, rec := range records {
-		row, err := convertRecord(rec, ts.table.Columns)
+		row, err := convertRecord(rec, ts.table.Columns, ts.reader, pm)
 		if err != nil {
 			continue
 		}
@@ -77,6 +82,15 @@ func (ts *TableScanner) Scan() (*ScanResult, error) {
 func hasGUIDColumns(cols []format.ColumnDef) bool {
 	for _, c := range cols {
 		if c.TypeID == format.TypeUniqueIdentifier {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLOBColumns(cols []format.ColumnDef) bool {
+	for _, c := range cols {
+		if c.TypeID == format.TypeNText || c.TypeID == format.TypeImage {
 			return true
 		}
 	}
@@ -172,7 +186,8 @@ func (ts *TableScanner) validateBitmapSize(computed int) int {
 }
 
 // convertRecord converts raw record bytes to Go-typed values.
-func convertRecord(rec format.Record, columns []format.ColumnDef) ([]any, error) {
+// If pr and pm are non-nil, LOB columns (ntext/image) are resolved from LV pages.
+func convertRecord(rec format.Record, columns []format.ColumnDef, pr *format.PageReader, pm *format.PageMapping) ([]any, error) {
 	row := make([]any, len(columns))
 	for i, col := range columns {
 		if i >= len(rec.Values) || rec.Values[i] == nil {
@@ -185,9 +200,18 @@ func convertRecord(rec format.Record, columns []format.ColumnDef) ([]any, error)
 			continue
 		}
 
+		// Resolve LOB pointers for ntext/image columns
+		if pr != nil && pm != nil && len(data) == 16 &&
+			(col.TypeID == format.TypeNText || col.TypeID == format.TypeImage) {
+			resolved, err := format.ResolveLOB(pr, pm, data)
+			if err == nil && len(resolved) > 16 {
+				data = resolved
+			}
+		}
+
 		val, err := ConvertValue(data, col.TypeID)
 		if err != nil {
-			row[i] = data // fall back to raw bytes
+			row[i] = data
 			continue
 		}
 		row[i] = val

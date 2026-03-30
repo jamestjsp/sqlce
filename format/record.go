@@ -264,20 +264,31 @@ func ScanTableRecords(pr *PageReader, totalPages int, objectID uint16, columns [
 	return ScanTableRecordsMulti(pr, totalPages, []uint16{objectID}, columns, nullBmpExtra...)
 }
 
+// ScanOutput holds scan results and non-fatal warnings.
+type ScanOutput struct {
+	Records  []Record
+	Warnings []error
+}
+
 func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	out := ScanTableRecordsMultiEx(pr, totalPages, objectIDs, columns, nullBmpExtra...)
+	return out.Records, nil
+}
+
+func ScanTableRecordsMultiEx(pr *PageReader, totalPages int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ScanOutput {
 	idSet := make(map[uint16]bool, len(objectIDs))
 	for _, id := range objectIDs {
 		idSet[id] = true
 	}
 
-	// Build objectID→filePage map for chunk following
 	objIDToFilePage := buildObjIDToFilePage(pr, totalPages)
 
-	var records []Record
+	var out ScanOutput
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
-			return nil, err
+			out.Warnings = append(out.Warnings, fmt.Errorf("page %d: %w", pg, err))
+			continue
 		}
 		pt := ClassifyPage(page)
 		if pt != PageLeaf && pt != PageData {
@@ -289,23 +300,28 @@ func ScanTableRecordsMulti(pr *PageReader, totalPages int, objectIDs []uint16, c
 
 		parsed, err := parsePageRecordsFollow(page, columns, pr, objIDToFilePage, nullBmpExtra...)
 		if err != nil {
+			out.Warnings = append(out.Warnings, fmt.Errorf("page %d parse: %w", pg, err))
 			continue
 		}
 		if parsed != nil {
-			records = append(records, parsed.Records...)
+			out.Records = append(out.Records, parsed.Records...)
 		}
 	}
 
-	return records, nil
+	return out
 }
 
 func ScanTableRecordsPages(pr *PageReader, pages []int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ([]Record, error) {
+	out := ScanTableRecordsPagesEx(pr, pages, objectIDs, columns, nullBmpExtra...)
+	return out.Records, nil
+}
+
+func ScanTableRecordsPagesEx(pr *PageReader, pages []int, objectIDs []uint16, columns []ColumnDef, nullBmpExtra ...int) ScanOutput {
 	idSet := make(map[uint16]bool, len(objectIDs))
 	for _, id := range objectIDs {
 		idSet[id] = true
 	}
 
-	// Build objectID→filePage map for chunk following
 	objIDToFilePage := make(map[uint16]int)
 	for _, pg := range pages {
 		page, err := pr.ReadPage(pg)
@@ -321,11 +337,12 @@ func ScanTableRecordsPages(pr *PageReader, pages []int, objectIDs []uint16, colu
 		}
 	}
 
-	var records []Record
+	var out ScanOutput
 	for _, pg := range pages {
 		page, err := pr.ReadPage(pg)
 		if err != nil {
-			return nil, err
+			out.Warnings = append(out.Warnings, fmt.Errorf("page %d: %w", pg, err))
+			continue
 		}
 		pt := ClassifyPage(page)
 		if pt != PageLeaf && pt != PageData {
@@ -337,14 +354,15 @@ func ScanTableRecordsPages(pr *PageReader, pages []int, objectIDs []uint16, colu
 
 		parsed, err := parsePageRecordsFollow(page, columns, pr, objIDToFilePage, nullBmpExtra...)
 		if err != nil {
+			out.Warnings = append(out.Warnings, fmt.Errorf("page %d parse: %w", pg, err))
 			continue
 		}
 		if parsed != nil {
-			records = append(records, parsed.Records...)
+			out.Records = append(out.Records, parsed.Records...)
 		}
 	}
 
-	return records, nil
+	return out
 }
 
 // buildObjIDToFilePage builds an objectID→file page number map for all Leaf/Data pages.

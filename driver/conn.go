@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"database/sql/driver"
+	"strings"
 
 	"github.com/jamestjat/sqlce/engine"
 )
@@ -12,13 +13,34 @@ type connector struct {
 	dsn string
 }
 
-// Connect opens the database.
+// Connect opens the database. DSN format: "path.sdf" or "path.sdf?password=secret".
 func (c *connector) Connect(_ context.Context) (driver.Conn, error) {
-	db, err := engine.Open(c.dsn)
+	path, password := parseDSN(c.dsn)
+	var db *engine.Database
+	var err error
+	if password != "" {
+		db, err = engine.OpenWithPassword(path, password)
+	} else {
+		db, err = engine.Open(path)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &conn{db: db}, nil
+}
+
+func parseDSN(dsn string) (path, password string) {
+	if idx := strings.Index(dsn, "?"); idx >= 0 {
+		path = dsn[:idx]
+		params := dsn[idx+1:]
+		for _, part := range strings.Split(params, "&") {
+			if strings.HasPrefix(part, "password=") {
+				password = part[len("password="):]
+			}
+		}
+		return
+	}
+	return dsn, ""
 }
 
 // Driver returns the underlying Driver.
