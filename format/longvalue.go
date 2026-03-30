@@ -34,19 +34,26 @@ func ResolveLOB(pr *PageReader, pm *PageMapping, ptr []byte) ([]byte, error) {
 	firstLogID := int(le.Uint32(ptr[8:12]))
 
 	// Fallback: if uint32 length looks wrong (zero or huge) but uint16 at [2:4] is valid,
-	// use the uint16 value. This handles the original pointer layout.
+	// use the uint16 value. This handles the original pointer layout where bytes [0:2]
+	// were unused (should be zero).
 	if (totalLen == 0 || totalLen > maxLOBSize) && len(ptr) >= 4 {
-		totalLen16 := int(le.Uint16(ptr[2:4]))
-		if totalLen16 > 0 {
-			totalLen = totalLen16
+		// Only fallback if this looks like old uint16 format (bytes [0:2] should be zero)
+		if le.Uint16(ptr[0:2]) == 0 {
+			totalLen16 := int(le.Uint16(ptr[2:4]))
+			if totalLen16 > 0 {
+				totalLen = totalLen16
+			}
 		}
 	}
 
 	// Similarly for page ID: if uint32 is zero but uint16 at [10:12] is valid
+	// (and bytes [8:10] are zero in old format)
 	if firstLogID == 0 && len(ptr) >= 12 {
-		firstLogID16 := int(le.Uint16(ptr[10:12]))
-		if firstLogID16 > 0 {
-			firstLogID = firstLogID16
+		if le.Uint16(ptr[8:10]) == 0 {
+			firstLogID16 := int(le.Uint16(ptr[10:12]))
+			if firstLogID16 > 0 {
+				firstLogID = firstLogID16
+			}
 		}
 	}
 
@@ -93,6 +100,9 @@ func ResolveLOB(pr *PageReader, pm *PageMapping, ptr []byte) ([]byte, error) {
 
 	if len(buf) == 0 {
 		return ptr, nil
+	}
+	if remaining > 0 {
+		return nil, fmt.Errorf("LOB incomplete: expected %d bytes total, got %d", totalLen, len(buf))
 	}
 	return buf, nil
 }
