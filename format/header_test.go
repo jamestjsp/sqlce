@@ -19,8 +19,8 @@ func TestReadHeader(t *testing.T) {
 		t.Fatalf("ReadHeader: %v", err)
 	}
 
-	if h.Magic != Magic {
-		t.Errorf("Magic = 0x%08X, want 0x%08X", h.Magic, Magic)
+	if h.DatabaseID == 0 {
+		t.Error("DatabaseID should be non-zero")
 	}
 	if h.Version != VersionCE40 {
 		t.Errorf("Version = 0x%08X, want 0x%08X (CE 4.0)", uint32(h.Version), uint32(VersionCE40))
@@ -37,9 +37,42 @@ func TestReadHeader(t *testing.T) {
 	if h.PageCount == 0 {
 		t.Error("PageCount should be non-zero")
 	}
+	if h.BuildNumber == 0 {
+		t.Error("BuildNumber should be non-zero")
+	}
 
-	t.Logf("Header: version=%s, LCID=%d, pages=%d, encrypted=%v (type=%d)",
-		h.Version, h.LCID, h.PageCount, h.Encrypted, h.EncryptionType)
+	t.Logf("Header: dbid=0x%08X version=%s build=%d LCID=%d pages=%d encrypted=%v",
+		h.DatabaseID, h.Version, h.BuildNumber, h.LCID, h.PageCount, h.Encrypted)
+}
+
+func TestReadHeaderMultipleDatabases(t *testing.T) {
+	files := []struct {
+		path    string
+		version SQLCEVersion
+	}{
+		{"../data/Depropanizer.sdf", VersionCE40},
+		{"../reference/SqlCeToolbox/src/API/SqlCeScripting40/Tests/Northwind.sdf", VersionCE40},
+		{"../reference/SqlCeToolbox/src/API/SqlCeScripting40/Tests/composite_foreign_key.sdf", VersionCE40},
+	}
+	for _, tc := range files {
+		t.Run(tc.path, func(t *testing.T) {
+			f, err := os.Open(tc.path)
+			if err != nil {
+				t.Skipf("test file not available: %v", err)
+			}
+			defer f.Close()
+
+			h, err := ReadHeader(f)
+			if err != nil {
+				t.Fatalf("ReadHeader: %v", err)
+			}
+			if h.Version != tc.version {
+				t.Errorf("Version = 0x%08X, want 0x%08X", uint32(h.Version), uint32(tc.version))
+			}
+			t.Logf("dbid=0x%08X version=%s build=%d pages=%d LCID=%d",
+				h.DatabaseID, h.Version, h.BuildNumber, h.PageCount, h.LCID)
+		})
+	}
 }
 
 func TestReadHeaderRejectsNonSDF(t *testing.T) {
@@ -60,12 +93,25 @@ func TestReadHeaderRejectsTooSmall(t *testing.T) {
 	t.Logf("correctly rejected too-small input: %v", err)
 }
 
+func TestReadHeaderRejectsNonZeroReserved(t *testing.T) {
+	buf := make([]byte, headerSize)
+	le := binary.LittleEndian
+	le.PutUint32(buf[offsetDatabaseID:], 0x12345678)
+	le.PutUint32(buf[offsetReserved:], 0x01) // non-zero reserved = not SDF
+	le.PutUint32(buf[offsetVersion:], uint32(VersionCE40))
+
+	_, err := ReadHeader(bytes.NewReader(buf))
+	if err == nil {
+		t.Fatal("expected error for non-zero reserved bytes")
+	}
+	t.Logf("correctly rejected: %v", err)
+}
+
 func TestReadHeaderRejectsUnknownVersion(t *testing.T) {
 	buf := make([]byte, headerSize)
 	le := binary.LittleEndian
-
-	// Valid magic, but bogus version
-	le.PutUint32(buf[offsetMagic:], Magic)
+	le.PutUint32(buf[offsetDatabaseID:], 0x12345678)
+	// bytes 4-7 zero (valid)
 	le.PutUint32(buf[offsetVersion:], 0xDEADBEEF)
 
 	_, err := ReadHeader(bytes.NewReader(buf))

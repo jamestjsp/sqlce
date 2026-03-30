@@ -1,20 +1,20 @@
 # sqlce
 
-A pure Go library for reading SQL Server Compact Edition (SQL CE) `.sdf` database files without requiring Windows, COM, or ODBC.
+Pure Go library for reading SQL Server Compact Edition (SQL CE) `.sdf` database files. No Windows, COM, or ODBC required.
 
 ## Features
 
-- **Pure Go**: zero CGO dependencies, runs on any OS
-- **`database/sql` driver**: use standard Go database interfaces
-- **Engine API**: direct access to tables, schemas, and row iteration
-- **CLI tool** (`sdfutil`): inspect and export SDF files from the command line
-- **Type-safe**: SQL CE types mapped to native Go types (int32, float64, time.Time, etc.)
+- **Pure Go**, zero CGO, runs on any platform
+- **`database/sql` driver** for standard Go database interfaces
+- **Engine API** for direct table, schema, and row access
+- **CLI tool** (`sdfutil`) for inspecting and exporting SDF files
+- **Encryption support** for RC4 (CE 3.x) and AES-128 (CE 4.0)
+- **SQLite export** for migrating entire databases in one step
 
 ## Installation
 
 ```bash
 go get github.com/jamestjat/sqlce
-
 ```
 
 ## Quick Start
@@ -39,6 +39,12 @@ for rows.Next() {
     rows.Scan(&name, &value)
     fmt.Printf("%s = %s\n", name, value)
 }
+```
+
+For encrypted databases, append a password to the DSN:
+
+```go
+db, _ := sql.Open("sqlce", "path/to/database.sdf?password=secret")
 ```
 
 ### Using the Engine API
@@ -71,6 +77,12 @@ for ri.Next() {
 // ri, _ := tbl.RowsWithObjectID(1305)
 ```
 
+For encrypted databases:
+
+```go
+db, _ := engine.OpenWithPassword("path/to/database.sdf", "secret")
+```
+
 ### Using the CLI
 
 ```bash
@@ -83,15 +95,18 @@ sdfutil info database.sdf
 # List tables
 sdfutil tables database.sdf
 
-# Show table schema
+# Show table schema with indexes and constraints
 sdfutil schema database.sdf TableName
 
 # Dump rows (tab-separated)
 sdfutil dump database.sdf TableName 1305
 
-# Export as CSV or JSON
+# Export single table as CSV or JSON
 sdfutil export database.sdf TableName 1305 --format csv
 sdfutil export database.sdf TableName 1305 --format json
+
+# Export all tables to a SQLite database
+sdfutil export --format sqlite database.sdf output.db
 ```
 
 ## SQL Support
@@ -104,11 +119,11 @@ SELECT col1, col2 FROM TableName
 SELECT * FROM "Quoted Table"
 SELECT * FROM [Bracketed Table]
 
--- Optional: specify objectID if automatic mapping fails
+-- Specify objectID when automatic mapping fails
 SELECT * FROM TableName WITH OBJECTID 1305
 ```
 
-The library automatically maps table names to internal objectIDs via page mapping and TABLE page analysis. For tables that can't be auto-mapped, use the `WITH OBJECTID` clause. See [ObjectID Mapping](#objectid-mapping) below.
+Table names are mapped to internal objectIDs automatically via page mapping and TABLE page analysis. For tables that can't be auto-mapped, use `WITH OBJECTID`.
 
 ## Supported Types
 
@@ -120,53 +135,68 @@ The library automatically maps table names to internal objectIDs via page mappin
 | bigint              | int64          | 8 bytes  |
 | float               | float64        | 8 bytes  |
 | real                | float32        | 4 bytes  |
-| money               | float64        | 8 bytes  |
+| money               | int64          | 8 bytes  |
 | bit                 | bool           | 1 byte   |
 | datetime            | time.Time      | 8 bytes  |
 | uniqueidentifier    | string (GUID)  | 16 bytes |
 | nvarchar            | string         | variable |
-| ntext               | string         | variable |
+| nchar               | string         | variable |
+| ntext               | string (LOB)   | variable |
 | binary              | []byte         | variable |
 | varbinary           | []byte         | variable |
-| image               | []byte         | variable |
-| numeric             | float64        | variable |
-| rowversion          | uint64         | 8 bytes  |
+| image               | []byte (LOB)   | variable |
+| numeric             | string         | 19 bytes |
+| rowversion          | []byte         | 8 bytes  |
+
+LOB columns (ntext, image) store 16-byte inline pointers. The library resolves these automatically by reading the referenced LongValue pages.
 
 ## ObjectID Mapping
 
-SQL CE stores table data across Leaf pages identified by internal objectIDs. The library automatically maps table names to objectIDs using:
+SQL CE stores table data across Leaf pages identified by internal objectIDs. The library maps table names to objectIDs through three strategies:
 
-1. **Automatic mapping**: deterministic mapping via TABLE pages and page mapping (MapA/MapB) discovers 60-70% of tables automatically
-2. **Manual override**: set directly via `db.SetObjectMapping(map[string]uint16{...})` for tables that can't be auto-mapped
+1. **Automatic**: deterministic mapping via TABLE pages and page mapping (MapA/MapB). Covers 60-70% of tables.
+2. **Manual override**: set directly via `db.SetObjectMapping(map[string]uint16{...})`
 3. **Row count matching**: `db.BuildObjectMapping(expectedRowCounts)` matches tables to objectIDs by comparing column counts and row counts against a reference
 
-For most databases, automatic mapping is sufficient. Use manual methods only when encountering unmapped tables.
+For most databases, automatic mapping is sufficient. Manual methods are only needed for unmapped tables.
+
+## Encryption
+
+The library supports opening password-protected databases:
+
+| Algorithm | CE Version | Status |
+|-----------|------------|--------|
+| RC4       | CE 3.x     | Supported |
+| AES-128   | CE 4.0     | Supported |
+| AES-256   | CE 4.0     | Not yet supported |
+
+Key derivation: password is encoded as UTF-16LE, hashed with SHA-256, and truncated to 16 bytes.
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| `format` | Low-level binary format: header, pages, catalog, records, types |
-| `engine` | High-level API: Database, Table, Schema, RowIterator, type conversion |
+| `format` | Low-level binary format: header, pages, catalog, records, types, crypto |
+| `engine` | High-level API: Database, Table, Schema, RowIterator, type conversion, SQLite export |
 | `driver` | `database/sql/driver` implementation |
 | `cmd/sdfutil` | Command-line utility |
 
 ## Limitations
 
-- **Read-only**: SQL CE files are opened for reading only; no INSERT/UPDATE/DELETE
-- **No WHERE/JOIN**: the SQL parser supports only SELECT with optional column lists (in-memory JOIN engine available via `ExtractControlLayer()`)
-- **No encryption**: encrypted `.sdf` files are detected but not yet decryptable
-- **No LongValue**: large values stored in LongValue (0x50) pages are not yet parsed
-- **Partial auto-mapping**: automatic objectID mapping discovers 60-70% of tables; remaining tables may need manual `WITH OBJECTID` clause or manual mapping
+- **Read-only**: no INSERT, UPDATE, or DELETE
+- **No WHERE/JOIN in SQL**: the SQL parser supports SELECT with optional column lists only
+- **Partial auto-mapping**: automatic objectID mapping covers 60-70% of tables; the rest need manual `WITH OBJECTID` or `SetObjectMapping`
 
 ## SQL CE Version Support
 
-| Version | Supported |
-|---------|-----------|
-| SQL CE 4.0 | ✅ Tested |
-| SQL CE 3.5 | ⚠️ Untested (same page size, may work) |
-| SQL CE 3.0 | ❌ Not supported |
-| SQL CE 2.0 | ❌ Not supported |
+Tested against 20 databases from 10 different sources (11,602 rows, zero errors).
+
+| Version | Status |
+|---------|--------|
+| SQL CE 4.0 | Tested (builds 73799, 74018, 74390, 74412) |
+| SQL CE 3.5 | Tested (builds 5357, 5386, 8080, 8081) |
+| SQL CE 3.0 | Not supported |
+| SQL CE 2.0 | Not supported |
 
 ## License
 

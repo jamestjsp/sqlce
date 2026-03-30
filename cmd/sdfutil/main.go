@@ -138,7 +138,7 @@ func cmdInfo(path string) {
 	}
 
 	fmt.Printf("File:       %s\n", path)
-	fmt.Printf("Version:    %s\n", h.Version)
+	fmt.Printf("Version:    %s\n", h.VersionString())
 	fmt.Printf("Page size:  %d bytes\n", h.PageSize)
 	fmt.Printf("Pages:      %d\n", db.TotalPages())
 	fmt.Printf("File size:  %d bytes\n", db.TotalPages()*h.PageSize)

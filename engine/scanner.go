@@ -19,8 +19,9 @@ type TableScanner struct {
 
 // ScanResult holds the scanned rows from a table.
 type ScanResult struct {
-	Columns []format.ColumnDef
-	Rows    [][]any
+	Columns  []format.ColumnDef
+	Rows     [][]any
+	Warnings []error
 }
 
 // NewTableScanner creates a scanner for the given table.
@@ -48,16 +49,13 @@ func (ts *TableScanner) Scan() (*ScanResult, error) {
 		}
 	}
 
-	var records []format.Record
-	var err error
+	var scanOut format.ScanOutput
 	if len(ts.pages) > 0 {
-		records, err = format.ScanTableRecordsPages(ts.reader, ts.pages, ts.objectIDs, ts.table.Columns, bmpExtra)
+		scanOut = format.ScanTableRecordsPagesEx(ts.reader, ts.pages, ts.objectIDs, ts.table.Columns, bmpExtra)
 	} else {
-		records, err = format.ScanTableRecordsMulti(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, bmpExtra)
+		scanOut = format.ScanTableRecordsMultiEx(ts.reader, ts.totalPages, ts.objectIDs, ts.table.Columns, bmpExtra)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("scanning table %s: %w", ts.table.Name, err)
-	}
+	records := scanOut.Records
 
 	// Build page mapping for LOB resolution if table has ntext/image columns
 	var pm *format.PageMapping
@@ -66,7 +64,8 @@ func (ts *TableScanner) Scan() (*ScanResult, error) {
 	}
 
 	result := &ScanResult{
-		Columns: ts.table.Columns,
+		Columns:  ts.table.Columns,
+		Warnings: scanOut.Warnings,
 	}
 
 	for _, rec := range records {
