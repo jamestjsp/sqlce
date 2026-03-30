@@ -12,6 +12,7 @@
 package driver
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 )
@@ -27,7 +28,7 @@ type Driver struct{}
 // The name is the file path to the .sdf file.
 func (d *Driver) Open(name string) (driver.Conn, error) {
 	c := &connector{dsn: name}
-	return c.Connect(nil)
+	return c.Connect(context.TODO())
 }
 
 var _ driver.Driver = (*Driver)(nil)
