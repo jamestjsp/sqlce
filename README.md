@@ -154,7 +154,7 @@ LOB columns (ntext, image) store 16-byte inline pointers. The library resolves t
 
 SQL CE stores table data across Leaf pages identified by internal objectIDs. The library maps table names to objectIDs through three strategies:
 
-1. **Automatic**: deterministic mapping via TABLE pages and page mapping (MapA/MapB). Covers 60-70% of tables.
+1. **Automatic**: deterministic mapping via TABLE pages and page mapping (MapA/MapB). Covers ~63% of tables (178/283 across 20 test databases); unmapped tables are typically empty.
 2. **Manual override**: set directly via `db.SetObjectMapping(map[string]uint16{...})`
 3. **Row count matching**: `db.BuildObjectMapping(expectedRowCounts)` matches tables to objectIDs by comparing column counts and row counts against a reference
 
@@ -185,7 +185,7 @@ Key derivation: password is encoded as UTF-16LE, hashed with SHA-256, and trunca
 
 - **Read-only**: no INSERT, UPDATE, or DELETE
 - **No WHERE/JOIN in SQL**: the SQL parser supports SELECT with optional column lists only
-- **Partial auto-mapping**: automatic objectID mapping covers 60-70% of tables; the rest need manual `WITH OBJECTID` or `SetObjectMapping`
+- **Partial auto-mapping**: automatic objectID mapping covers ~63% of tables across 20 test databases (178/283); unmapped tables are typically empty. Use `WITH OBJECTID` or `SetObjectMapping` for any that aren't resolved
 
 ## SQL CE Version Support
 
