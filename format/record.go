@@ -281,7 +281,7 @@ func ScanTableRecordsMultiEx(pr *PageReader, totalPages int, objectIDs []uint16,
 		idSet[id] = true
 	}
 
-	objIDToFilePage := buildObjIDToFilePage(pr, totalPages)
+	pm, _ := BuildPageMapping(pr)
 
 	var out ScanOutput
 	for pg := 0; pg < totalPages; pg++ {
@@ -298,7 +298,7 @@ func ScanTableRecordsMultiEx(pr *PageReader, totalPages int, objectIDs []uint16,
 			continue
 		}
 
-		parsed, err := parsePageRecordsFollow(page, columns, pr, objIDToFilePage, nullBmpExtra...)
+		parsed, err := parsePageRecordsFollow(page, columns, pr, pm, nullBmpExtra...)
 		if err != nil {
 			out.Warnings = append(out.Warnings, fmt.Errorf("page %d parse: %w", pg, err))
 			continue
@@ -322,20 +322,7 @@ func ScanTableRecordsPagesEx(pr *PageReader, pages []int, objectIDs []uint16, co
 		idSet[id] = true
 	}
 
-	objIDToFilePage := make(map[uint16]int)
-	for _, pg := range pages {
-		page, err := pr.ReadPage(pg)
-		if err != nil {
-			continue
-		}
-		pt := ClassifyPage(page)
-		if pt == PageLeaf || pt == PageData {
-			objID := PageObjectID(page)
-			if _, exists := objIDToFilePage[objID]; !exists {
-				objIDToFilePage[objID] = pg
-			}
-		}
-	}
+	pm, _ := BuildPageMapping(pr)
 
 	var out ScanOutput
 	for _, pg := range pages {
@@ -352,7 +339,7 @@ func ScanTableRecordsPagesEx(pr *PageReader, pages []int, objectIDs []uint16, co
 			continue
 		}
 
-		parsed, err := parsePageRecordsFollow(page, columns, pr, objIDToFilePage, nullBmpExtra...)
+		parsed, err := parsePageRecordsFollow(page, columns, pr, pm, nullBmpExtra...)
 		if err != nil {
 			out.Warnings = append(out.Warnings, fmt.Errorf("page %d parse: %w", pg, err))
 			continue
@@ -365,29 +352,9 @@ func ScanTableRecordsPagesEx(pr *PageReader, pages []int, objectIDs []uint16, co
 	return out
 }
 
-// buildObjIDToFilePage builds an objectID→file page number map for all Leaf/Data pages.
-func buildObjIDToFilePage(pr *PageReader, totalPages int) map[uint16]int {
-	m := make(map[uint16]int)
-	for pg := 0; pg < totalPages; pg++ {
-		page, err := pr.ReadPage(pg)
-		if err != nil {
-			continue
-		}
-		pt := ClassifyPage(page)
-		if pt != PageLeaf && pt != PageData {
-			continue
-		}
-		objID := PageObjectID(page)
-		if _, exists := m[objID]; !exists {
-			m[objID] = pg
-		}
-	}
-	return m
-}
-
 // parsePageRecordsFollow is like ParsePageRecords but follows nextChunk pointers
 // for multi-slot records that span beyond a single slot entry.
-func parsePageRecordsFollow(page []byte, columns []ColumnDef, pr *PageReader, objIDToFilePage map[uint16]int, nullBmpExtra ...int) (*PageRecords, error) {
+func parsePageRecordsFollow(page []byte, columns []ColumnDef, pr *PageReader, pm *PageMapping, nullBmpExtra ...int) (*PageRecords, error) {
 	if len(page) < 32 {
 		return nil, nil
 	}
@@ -446,8 +413,8 @@ func parsePageRecordsFollow(page []byte, columns []ColumnDef, pr *PageReader, ob
 
 		// Follow nextChunk chain for multi-slot records
 		nextChunk := le.Uint32(entry[0:4])
-		if nextChunk != 0 && pr != nil && objIDToFilePage != nil {
-			entry = followChunks(pr, entry, nextChunk, objIDToFilePage)
+		if nextChunk != 0 && pr != nil && pm != nil {
+			entry = followChunks(pr, entry, nextChunk, pm)
 		}
 
 		r, _, err := parseOneRecord(entry, 0, fixedCols, varCols, bitCols, len(columns), bmpExtra)

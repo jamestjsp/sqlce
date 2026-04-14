@@ -143,22 +143,11 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 	seenCols := make(map[struct{ t, c string }]bool)
 	seenConstraints := make(map[struct{ t, c string }]bool)
 
-	// Build objectID → file page number mapping for Leaf pages.
-	// nextChunk pointers use logical page IDs (= objectID at page[4:6]).
-	objIDToFilePage := make(map[uint16]int)
-	for pg := 0; pg < totalPages; pg++ {
-		page, err := pr.ReadPage(pg)
-		if err != nil {
-			continue
-		}
-		if ClassifyPage(page) != PageLeaf {
-			continue
-		}
-		objID := PageObjectID(page)
-		if _, exists := objIDToFilePage[objID]; !exists {
-			objIDToFilePage[objID] = pg
-		}
-	}
+	// Resolve nextChunk pointers to their continuation pages via the page
+	// map. System catalog records occasionally span multiple slots on the
+	// same page; multi-page user tables always need the page map to find
+	// the right continuation.
+	pmChunks, _ := BuildPageMapping(pr)
 
 	for pg := 0; pg < totalPages; pg++ {
 		page, err := pr.ReadPage(pg)
@@ -182,10 +171,10 @@ func ReadCatalog(pr *PageReader, totalPages int) (*Catalog, error) {
 			if len(entry) < 4 {
 				continue
 			}
-			// Follow nextChunk chain for multi-page records
+			// Follow nextChunk chain for multi-slot records
 			nextChunk := le.Uint32(entry[:4])
 			if nextChunk != 0 {
-				entry = followChunks(pr, entry, nextChunk, objIDToFilePage)
+				entry = followChunks(pr, entry, nextChunk, pmChunks)
 			}
 
 			if len(entry) < 93+4 {
@@ -363,7 +352,31 @@ type dataSlot struct {
 // The slot array grows backwards from the page end (4 bytes per slot).
 // Each slot dword: offset[11:0], size[23:12], flags[31:24]
 // Flag bit 0 = empty/free, flag bit 1 = start of new record.
+//
+// Empty/invalid slots are dropped from the returned slice. Callers that
+// need to look up a slot by its raw array index (e.g. nextChunk
+// pointers) must use readDataPageSlotAt so that filtering does not
+// renumber the surviving slots.
 func readDataPageSlots(page []byte) []dataSlot {
+	all := readDataPageSlotsRaw(page)
+	if all == nil {
+		return nil
+	}
+	slots := make([]dataSlot, 0, len(all))
+	for _, s := range all {
+		if s.data != nil {
+			slots = append(slots, s)
+		}
+	}
+	return slots
+}
+
+// readDataPageSlotsRaw returns every slot in the slot array positionally,
+// with data set to nil for slots that are empty or have an invalid
+// offset/size. Callers that resolve slot indices from on-disk pointers
+// (nextChunk, overflow pointers) must use this function — collapsing
+// empty slots would shift real slot indices down and break lookups.
+func readDataPageSlotsRaw(page []byte) []dataSlot {
 	if len(page) < 32 {
 		return nil
 	}
@@ -372,11 +385,11 @@ func readDataPageSlots(page []byte) []dataSlot {
 	dword := le.Uint32(page[20:24])
 	entriesCount := int(dword & 0xFFF)
 
-	if entriesCount == 0 || entriesCount > 500 {
+	if entriesCount == 0 || entriesCount > 4095 {
 		return nil
 	}
 
-	var slots []dataSlot
+	slots := make([]dataSlot, 0, entriesCount)
 	pageLen := len(page)
 
 	for i := 0; i < entriesCount; i++ {
@@ -392,12 +405,24 @@ func readDataPageSlots(page []byte) []dataSlot {
 		start := entryOffset + 24
 		end := start + entrySize
 		if start >= pageLen || end > pageLen || end <= start {
+			slots = append(slots, dataSlot{flags: flags})
 			continue
 		}
 
 		slots = append(slots, dataSlot{data: page[start:end], flags: flags})
 	}
 	return slots
+}
+
+// readDataPageSlotAt returns the slot at the given raw array index on a
+// data/leaf page, or a zero-valued dataSlot (with data=nil) if the slot
+// is empty, invalid, or out of range.
+func readDataPageSlotAt(page []byte, rawIdx int) dataSlot {
+	all := readDataPageSlotsRaw(page)
+	if rawIdx < 0 || rawIdx >= len(all) {
+		return dataSlot{}
+	}
+	return all[rawIdx]
 }
 
 // readDataPageEntries returns just entry data (for backward compat with record.go).
@@ -412,27 +437,40 @@ func readDataPageEntries(page []byte) [][]byte {
 	return entries
 }
 
-// followChunks reassembles a multi-page record by following nextChunk pointers.
-// nextChunk format: logicalPageId[31:12], entryIndex[11:0].
-// objIDToFilePage maps logical page IDs (= objectIDs) to file page numbers.
-func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, objIDToFilePage map[uint16]int) []byte {
+// followChunks reassembles a multi-slot record by following nextChunk
+// pointers. The pointer format is:
+//
+//	bits 0..11  entry index within the target page's slot array
+//	bits 12..31 logical page ID (not an objectID; resolved via PageMapping)
+//
+// Historically this used an objectID→file-page map, which worked only when
+// a table fit on a single page. User tables that span multiple physical
+// pages share an objectID across pages but each has its own logical page
+// ID, so the objectID-based lookup could not disambiguate the continuation
+// page. The PageMapping resolves the logical ID to the correct file page.
+//
+// pm may be nil; in that case the function returns the first chunk only.
+func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, pm *PageMapping) []byte {
 	buf := make([]byte, len(firstEntry))
 	copy(buf, firstEntry)
 
-	const maxRecordSize = 64 * 1024 // 64KB reasonable limit for multi-slot records
+	if pm == nil {
+		return buf
+	}
+
+	const maxRecordSize = 64 * 1024
 	visited := make(map[uint32]bool)
 
 	for i := 0; i < 20 && nextChunk != 0; i++ {
-		// Detect cycles in chunk chain
 		if visited[nextChunk] {
 			break
 		}
 		visited[nextChunk] = true
 
-		logicalPageID := uint16(nextChunk >> 12)
+		logicalPageID := int(nextChunk >> 12)
 		entryIdx := int(nextChunk & 0xFFF)
 
-		filePage, ok := objIDToFilePage[logicalPageID]
+		filePage, ok := pm.FilePageNum(logicalPageID)
 		if !ok {
 			break
 		}
@@ -442,23 +480,18 @@ func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, objIDToFi
 			break
 		}
 
-		slots := readDataPageSlots(page)
-		if entryIdx >= len(slots) {
-			break
-		}
-
-		contData := slots[entryIdx].data
+		slot := readDataPageSlotAt(page, entryIdx)
+		contData := slot.data
 		if len(contData) < 4 {
 			break
 		}
 
 		nextChunk = binary.LittleEndian.Uint32(contData[:4])
-		
-		// Prevent unbounded memory allocation
+
 		if len(buf)+len(contData[4:]) > maxRecordSize {
 			break
 		}
-		
+
 		buf = append(buf, contData[4:]...)
 	}
 	return buf
