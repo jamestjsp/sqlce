@@ -425,18 +425,6 @@ func readDataPageSlotAt(page []byte, rawIdx int) dataSlot {
 	return all[rawIdx]
 }
 
-// readDataPageEntries returns just entry data (for backward compat with record.go).
-func readDataPageEntries(page []byte) [][]byte {
-	slots := readDataPageSlots(page)
-	entries := make([][]byte, 0, len(slots))
-	for _, s := range slots {
-		if s.flags&1 == 0 {
-			entries = append(entries, s.data)
-		}
-	}
-	return entries
-}
-
 // followChunks reassembles a multi-slot record by following nextChunk
 // pointers. The pointer format is:
 //

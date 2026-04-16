@@ -400,7 +400,10 @@ func parsePageRecordsFollow(page []byte, columns []ColumnDef, pr *PageReader, pm
 	slots := readDataPageSlots(page)
 	for _, slot := range slots {
 		if slot.flags&1 != 0 {
-			continue
+			continue // free/empty
+		}
+		if slot.flags&2 == 0 {
+			continue // continuation slot, reached via followChunks
 		}
 		entry := slot.data
 		if len(entry) < 8 {
