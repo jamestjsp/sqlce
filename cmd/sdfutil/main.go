@@ -397,7 +397,7 @@ func cmdExportSQLite(sdfPath, outputPath string) {
 		for i := range placeholders {
 			placeholders[i] = "?"
 		}
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" VALUES (%s)`, name, strings.Join(placeholders, ","))
+		insertSQL := fmt.Sprintf(`INSERT INTO "%s" VALUES (%s)`, engine.EscapeIdentifier(name), strings.Join(placeholders, ","))
 
 		tx, err := sqliteDB.Begin()
 		if err != nil {

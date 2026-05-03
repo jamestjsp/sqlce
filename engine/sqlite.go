@@ -59,7 +59,7 @@ func ExportToSQLite(db *Database) (*ExportResult, error) {
 		for i := range placeholders {
 			placeholders[i] = "?"
 		}
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" VALUES (%s)`, name, strings.Join(placeholders, ","))
+		insertSQL := fmt.Sprintf(`INSERT INTO "%s" VALUES (%s)`, EscapeIdentifier(name), strings.Join(placeholders, ","))
 
 		tx, err := sqliteDB.Begin()
 		if err != nil {
@@ -99,13 +99,19 @@ func ExportToSQLite(db *Database) (*ExportResult, error) {
 	return res, nil
 }
 
+// EscapeIdentifier doubles any double-quote characters in s so it can be
+// safely used inside a "quoted" SQL identifier.
+func EscapeIdentifier(s string) string {
+	return strings.ReplaceAll(s, `"`, `""`)
+}
+
 func BuildCreateTable(name string, cols []format.ColumnDef) string {
 	var parts []string
 	for _, col := range cols {
 		sqlType := ceTypeToSQLite(col.TypeID)
-		parts = append(parts, fmt.Sprintf(`"%s" %s`, col.Name, sqlType))
+		parts = append(parts, fmt.Sprintf(`"%s" %s`, EscapeIdentifier(col.Name), sqlType))
 	}
-	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (%s)`, name, strings.Join(parts, ", "))
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (%s)`, EscapeIdentifier(name), strings.Join(parts, ", "))
 }
 
 func ceTypeToSQLite(typeID uint16) string {
