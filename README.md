@@ -47,6 +47,10 @@ For encrypted databases, append a password to the DSN:
 db, _ := sql.Open("sqlce", "path/to/database.sdf?password=secret")
 ```
 
+To avoid embedding the password in the DSN, set `SQLCE_PASSWORD` before opening
+a DSN without a `password=` parameter. A DSN password takes precedence when both
+are present.
+
 ### Using the Engine API
 
 ```go
@@ -112,6 +116,8 @@ sdfutil export database.sdf TableName 1305 --format csv --escape-formulas
 sdfutil export --format sqlite database.sdf output.db
 ```
 
+For encrypted databases, `sdfutil` reads the password from `SQLCE_PASSWORD`.
+
 ## SQL Support
 
 The `database/sql` driver supports a minimal SQL subset:
@@ -174,6 +180,11 @@ The library supports opening password-protected databases:
 | AES-256   | CE 4.0     | Not yet supported |
 
 Key derivation: password is encoded as UTF-16LE, hashed with SHA-256, and truncated to 16 bytes.
+
+Prefer `engine.OpenWithPassword`, `SQLCE_PASSWORD`, or another secret-management
+path over embedding passwords in DSNs that may appear in logs, command history,
+or process listings. Existing `?password=` DSNs remain supported for
+compatibility.
 
 ## Packages
 

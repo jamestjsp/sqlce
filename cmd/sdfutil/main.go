@@ -141,7 +141,7 @@ Commands:
 }
 
 func cmdInfo(path string) {
-	db, err := engine.Open(path)
+	db, err := openDatabase(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -164,7 +164,7 @@ func cmdInfo(path string) {
 }
 
 func cmdTables(path string) {
-	db, err := engine.Open(path)
+	db, err := openDatabase(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -179,7 +179,7 @@ func cmdTables(path string) {
 }
 
 func cmdSchema(path, tableName string) {
-	db, err := engine.Open(path)
+	db, err := openDatabase(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -252,7 +252,7 @@ func cmdSchema(path, tableName string) {
 }
 
 func cmdDump(path, tableName string, objectID uint16) {
-	db, err := engine.Open(path)
+	db, err := openDatabase(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -292,7 +292,7 @@ func cmdDump(path, tableName string, objectID uint16) {
 }
 
 func cmdExport(path, tableName string, objectID uint16, outputFormat string, escapeFormulas bool) {
-	db, err := engine.Open(path)
+	db, err := openDatabase(path)
 	if err != nil {
 		fatal(err)
 	}
@@ -378,7 +378,7 @@ func exportJSON(ri *engine.RowIterator) {
 }
 
 func cmdExportSQLite(sdfPath, outputPath string, force bool) {
-	db, err := engine.Open(sdfPath)
+	db, err := openDatabase(sdfPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -519,7 +519,7 @@ func prepareSQLiteOutput(outputPath string, force bool) error {
 }
 
 func cmdControlLayer(sdfPath string) {
-	db, err := engine.Open(sdfPath)
+	db, err := openDatabase(sdfPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -545,4 +545,11 @@ func cmdControlLayer(sdfPath string) {
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	os.Exit(1)
+}
+
+func openDatabase(path string) (*engine.Database, error) {
+	if password := os.Getenv("SQLCE_PASSWORD"); password != "" {
+		return engine.OpenWithPassword(path, password)
+	}
+	return engine.Open(path)
 }

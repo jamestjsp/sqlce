@@ -17,8 +17,9 @@ you control.
   spreadsheet, database, or BI tools can trigger behavior controlled by the
   exported data, such as spreadsheet formulas or downstream SQL interpretation.
 - Passwords for encrypted databases are provided by the caller or CLI operator.
-  Avoid placing passwords in command history, logs, crash reports, or shared
-  configuration files.
+  Prefer `engine.OpenWithPassword` or the `SQLCE_PASSWORD` environment variable
+  over DSN strings when practical. Avoid placing passwords in command history,
+  logs, crash reports, or shared configuration files.
 
 ## Processing Hostile Files
 

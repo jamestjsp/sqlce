@@ -3,10 +3,13 @@ package driver
 import (
 	"context"
 	"database/sql/driver"
+	"os"
 	"strings"
 
 	"github.com/jamestjat/sqlce/engine"
 )
+
+const passwordEnvVar = "SQLCE_PASSWORD"
 
 // connector implements driver.Connector.
 type connector struct {
@@ -30,17 +33,26 @@ func (c *connector) Connect(_ context.Context) (driver.Conn, error) {
 }
 
 func parseDSN(dsn string) (path, password string) {
+	return parseDSNWithEnv(dsn, os.Getenv)
+}
+
+func parseDSNWithEnv(dsn string, getenv func(string) string) (path, password string) {
 	if idx := strings.Index(dsn, "?"); idx >= 0 {
 		path = dsn[:idx]
 		params := dsn[idx+1:]
+		passwordSet := false
 		for _, part := range strings.Split(params, "&") {
 			if strings.HasPrefix(part, "password=") {
 				password = part[len("password="):]
+				passwordSet = true
 			}
+		}
+		if !passwordSet {
+			password = getenv(passwordEnvVar)
 		}
 		return
 	}
-	return dsn, ""
+	return dsn, getenv(passwordEnvVar)
 }
 
 // Driver returns the underlying Driver.

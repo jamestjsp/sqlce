@@ -25,7 +25,8 @@ func init() {
 type Driver struct{}
 
 // Open returns a new connection to the database.
-// The name is the file path to the .sdf file.
+// The name is the file path to the .sdf file, optionally with ?password=secret.
+// If the DSN has no password parameter, SQLCE_PASSWORD is used when set.
 func (d *Driver) Open(name string) (driver.Conn, error) {
 	c := &connector{dsn: name}
 	return c.Connect(context.TODO())
