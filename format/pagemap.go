@@ -27,6 +27,9 @@ func BuildPageMapping(pr *PageReader) (*PageMapping, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(header) < offsetPage1Addr+4 {
+		return pm, nil
+	}
 
 	page1Addr := int(binary.LittleEndian.Uint32(header[offsetPage1Addr:]) & addrMask)
 	if page1Addr == 0 {
