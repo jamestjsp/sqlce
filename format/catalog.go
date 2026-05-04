@@ -110,6 +110,12 @@ const (
 // = 7 (bitmap) + 59 (fixed) + 19 (var header) = 85
 const sysObjVarDataOffset = 85
 
+const (
+	maxDataPageSlots         = 4095
+	maxRecordChunkHops       = 20
+	maxReassembledRecordSize = 64 * 1024
+)
+
 // ReadCatalog parses the __SysObjects system catalog to build table/column definitions.
 //
 // DATA pages (type 0x40) use a slotted page format: a slot array at the page end
@@ -347,7 +353,8 @@ type dataSlot struct {
 // readDataPageSlots extracts entries from a DATA/Leaf page using its slot array.
 //
 // DATA page layout:
-//   [page header 16B][data header 8B][entries...][...slot array]
+//
+//	[page header 16B][data header 8B][entries...][...slot array]
 //
 // The slot array grows backwards from the page end (4 bytes per slot).
 // Each slot dword: offset[11:0], size[23:12], flags[31:24]
@@ -385,7 +392,7 @@ func readDataPageSlotsRaw(page []byte) []dataSlot {
 	dword := le.Uint32(page[20:24])
 	entriesCount := int(dword & 0xFFF)
 
-	if entriesCount == 0 || entriesCount > 4095 {
+	if entriesCount == 0 || entriesCount > maxDataPageSlots {
 		return nil
 	}
 
@@ -446,10 +453,9 @@ func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, pm *PageM
 		return buf
 	}
 
-	const maxRecordSize = 64 * 1024
 	visited := make(map[uint32]bool)
 
-	for i := 0; i < 20 && nextChunk != 0; i++ {
+	for i := 0; i < maxRecordChunkHops && nextChunk != 0; i++ {
 		if visited[nextChunk] {
 			break
 		}
@@ -476,7 +482,7 @@ func followChunks(pr *PageReader, firstEntry []byte, nextChunk uint32, pm *PageM
 
 		nextChunk = binary.LittleEndian.Uint32(contData[:4])
 
-		if len(buf)+len(contData[4:]) > maxRecordSize {
+		if len(buf)+len(contData[4:]) > maxReassembledRecordSize {
 			break
 		}
 
@@ -777,4 +783,3 @@ func scanLeafPagesByParent(pr *PageReader, totalPages int) map[uint16][]uint16 {
 	}
 	return result
 }
-
