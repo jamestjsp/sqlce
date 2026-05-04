@@ -63,6 +63,50 @@ func TestQueryParse_WithObjectID(t *testing.T) {
 	}
 }
 
+func TestQueryParse_RejectTrailingText(t *testing.T) {
+	tests := []string{
+		"SELECT * FROM Properties extra",
+		"SELECT * FROM Properties;",
+		"SELECT * FROM Properties WITH",
+		"SELECT * FROM Properties WITH OBJECTID",
+		"SELECT * FROM Properties WITH OBJECTID 1305 extra",
+		"SELECT * FROM Properties WITH OBJECTID 1305;",
+		"SELECT * FROM Properties WITH OBJECTID -1",
+		"SELECT * FROM Properties WITH OBJECTID 65536",
+		"SELECT * FROM Properties WITH OBJECTID abc",
+	}
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			if _, err := parseSelectQuery(query); err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}
+
+func TestQueryParse_ObjectIDBounds(t *testing.T) {
+	tests := []struct {
+		query string
+		want  uint16
+	}{
+		{"SELECT * FROM Properties WITH OBJECTID 0", 0},
+		{"SELECT * FROM Properties WITH OBJECTID 65535", 65535},
+		{`SELECT * FROM "Properties" WITH OBJECTID 1305`, 1305},
+		{"SELECT * FROM [Properties] WITH OBJECTID 1305", 1305},
+	}
+	for _, tc := range tests {
+		t.Run(tc.query, func(t *testing.T) {
+			pq, err := parseSelectQuery(tc.query)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if pq.ObjectID != tc.want {
+				t.Fatalf("ObjectID = %d, want %d", pq.ObjectID, tc.want)
+			}
+		})
+	}
+}
+
 func TestQueryParse_CaseInsensitive(t *testing.T) {
 	pq, err := parseSelectQuery("select * from Properties")
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/jamestjat/sqlce/engine"
@@ -127,16 +128,20 @@ func parseSelectQuery(query string) (*parsedQuery, error) {
 	}
 
 	// Check for WITH OBJECTID clause
-	restUpper := strings.ToUpper(strings.TrimSpace(rest))
-	if strings.HasPrefix(restUpper, "WITH OBJECTID") {
-		remaining := strings.TrimSpace(strings.TrimSpace(rest)[13:])
-		var id int
-		_, err := fmt.Sscanf(remaining, "%d", &id)
-		if err != nil {
-			return nil, fmt.Errorf("sqlce: invalid OBJECTID value: %w", err)
-		}
-		pq.ObjectID = uint16(id)
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return pq, nil
 	}
+
+	fields := strings.Fields(rest)
+	if len(fields) != 3 || !strings.EqualFold(fields[0], "WITH") || !strings.EqualFold(fields[1], "OBJECTID") {
+		return nil, fmt.Errorf("sqlce: unsupported trailing query text after table name: %q", rest)
+	}
+	id, err := strconv.Atoi(fields[2])
+	if err != nil || id < 0 || id > 65535 {
+		return nil, fmt.Errorf("sqlce: invalid OBJECTID value: %q", fields[2])
+	}
+	pq.ObjectID = uint16(id)
 
 	return pq, nil
 }
