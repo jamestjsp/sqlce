@@ -43,6 +43,8 @@ func FuzzReadCatalog(f *testing.F) {
 		if len(pageData) < DefaultPageSize {
 			pageData = append(pageData, make([]byte, DefaultPageSize-len(pageData))...)
 		}
+		// Keep catalog fuzzing focused on catalog page contents instead of
+		// spending the fuzz budget chasing arbitrary page-map pointers.
 		if len(pageData) >= offsetPage1Addr+4 {
 			clear(pageData[offsetPage1Addr : offsetPage1Addr+4])
 		}
@@ -60,6 +62,8 @@ func FuzzResolveLOB(f *testing.F) {
 		ptr := make([]byte, 16)
 		copy(ptr, data)
 		totalLen := int(binary.LittleEndian.Uint32(ptr[0:4]))
+		// Oversized LOB rejection has a regression test; this fuzz target keeps
+		// generated reads small enough to exercise malformed pointer handling.
 		if totalLen > 8192 {
 			return
 		}
