@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -60,20 +61,30 @@ func main() {
 		cmdDump(os.Args[2], os.Args[3], uint16(objID))
 	case "export":
 		outputFormat := "csv"
+		force := false
 		for i, arg := range os.Args {
 			if arg == "--format" && i+1 < len(os.Args) {
 				outputFormat = os.Args[i+1]
 			}
+			if arg == "--force" {
+				force = true
+			}
 		}
 		if outputFormat == "sqlite" {
 			if len(os.Args) < 4 {
-				fmt.Fprintln(os.Stderr, "usage: sdfutil export --format sqlite <file.sdf> <output.db>")
+				fmt.Fprintln(os.Stderr, "usage: sdfutil export --format sqlite [--force] <file.sdf> <output.db>")
 				os.Exit(1)
 			}
 			sdfPath := ""
 			outputPath := ""
-			for _, arg := range os.Args[2:] {
-				if arg == "--format" || arg == "sqlite" {
+			args := os.Args[2:]
+			for i := 0; i < len(args); i++ {
+				arg := args[i]
+				switch arg {
+				case "--format":
+					i++
+					continue
+				case "--force":
 					continue
 				}
 				if sdfPath == "" {
@@ -83,10 +94,10 @@ func main() {
 				}
 			}
 			if sdfPath == "" || outputPath == "" {
-				fmt.Fprintln(os.Stderr, "usage: sdfutil export --format sqlite <file.sdf> <output.db>")
+				fmt.Fprintln(os.Stderr, "usage: sdfutil export --format sqlite [--force] <file.sdf> <output.db>")
 				os.Exit(1)
 			}
-			cmdExportSQLite(sdfPath, outputPath)
+			cmdExportSQLite(sdfPath, outputPath, force)
 		} else {
 			if len(os.Args) < 5 {
 				fmt.Fprintln(os.Stderr, "usage: sdfutil export <file.sdf> <table> <objectID> [--format csv|json]")
@@ -120,7 +131,8 @@ Commands:
   schema <file.sdf> <table>                         Show table column schema
   dump   <file.sdf> <table> <objectID>              Dump rows (tab-separated)
   export <file.sdf> <table> <objectID>              Export (--format csv|json)
-  export --format sqlite <file.sdf> <output.db>     Export all tables to SQLite
+  export --format sqlite [--force] <file.sdf> <output.db>
+                                                     Export all tables to SQLite
   control-layer <file.sdf>                           Extract control layer as JSON`)
 }
 
@@ -343,14 +355,17 @@ func exportJSON(ri *engine.RowIterator) {
 	enc.Encode(allRows)
 }
 
-func cmdExportSQLite(sdfPath, outputPath string) {
+func cmdExportSQLite(sdfPath, outputPath string, force bool) {
 	db, err := engine.Open(sdfPath)
 	if err != nil {
 		fatal(err)
 	}
 	defer db.Close()
 
-	os.Remove(outputPath)
+	if err := prepareSQLiteOutput(outputPath, force); err != nil {
+		fatal(err)
+	}
+
 	sqliteDB, err := sql.Open("sqlite", outputPath)
 	if err != nil {
 		fatal(fmt.Errorf("creating SQLite: %w", err))
@@ -447,6 +462,38 @@ func cmdExportSQLite(sdfPath, outputPath string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\nExported %d tables (%d rows), skipped %d\n", exported, totalRows, skipped)
+}
+
+func prepareSQLiteOutput(outputPath string, force bool) error {
+	info, err := os.Stat(outputPath)
+	if err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("SQLite output path is a directory: %s", outputPath)
+		}
+		if !force {
+			return fmt.Errorf("SQLite output file already exists: %s (use --force to overwrite)", outputPath)
+		}
+		if err := os.Remove(outputPath); err != nil {
+			return fmt.Errorf("remove existing SQLite output: %w", err)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("check SQLite output path: %w", err)
+	}
+
+	parent := filepath.Dir(outputPath)
+	if parent == "." || parent == "" {
+		return nil
+	}
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("check SQLite output directory: %w", err)
+	}
+	if !parentInfo.IsDir() {
+		return fmt.Errorf("SQLite output directory is not a directory: %s", parent)
+	}
+	return nil
 }
 
 func cmdControlLayer(sdfPath string) {
