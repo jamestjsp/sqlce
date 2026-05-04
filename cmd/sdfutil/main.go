@@ -62,12 +62,16 @@ func main() {
 	case "export":
 		outputFormat := "csv"
 		force := false
+		escapeFormulas := false
 		for i, arg := range os.Args {
 			if arg == "--format" && i+1 < len(os.Args) {
 				outputFormat = os.Args[i+1]
 			}
 			if arg == "--force" {
 				force = true
+			}
+			if arg == "--escape-formulas" {
+				escapeFormulas = true
 			}
 		}
 		if outputFormat == "sqlite" {
@@ -100,7 +104,7 @@ func main() {
 			cmdExportSQLite(sdfPath, outputPath, force)
 		} else {
 			if len(os.Args) < 5 {
-				fmt.Fprintln(os.Stderr, "usage: sdfutil export <file.sdf> <table> <objectID> [--format csv|json]")
+				fmt.Fprintln(os.Stderr, "usage: sdfutil export <file.sdf> <table> <objectID> [--format csv|json] [--escape-formulas]")
 				os.Exit(1)
 			}
 			objID, err := strconv.Atoi(os.Args[4])
@@ -108,7 +112,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "invalid objectID: %s\n", os.Args[4])
 				os.Exit(1)
 			}
-			cmdExport(os.Args[2], os.Args[3], uint16(objID), outputFormat)
+			cmdExport(os.Args[2], os.Args[3], uint16(objID), outputFormat, escapeFormulas)
 		}
 	case "control-layer":
 		if len(os.Args) < 3 {
@@ -130,7 +134,7 @@ Commands:
   tables <file.sdf>                                 List all tables
   schema <file.sdf> <table>                         Show table column schema
   dump   <file.sdf> <table> <objectID>              Dump rows (tab-separated)
-  export <file.sdf> <table> <objectID>              Export (--format csv|json)
+  export <file.sdf> <table> <objectID>              Export (--format csv|json, --escape-formulas)
   export --format sqlite [--force] <file.sdf> <output.db>
                                                      Export all tables to SQLite
   control-layer <file.sdf>                           Extract control layer as JSON`)
@@ -287,7 +291,7 @@ func cmdDump(path, tableName string, objectID uint16) {
 	fmt.Fprintf(os.Stderr, "\n%d rows\n", count)
 }
 
-func cmdExport(path, tableName string, objectID uint16, outputFormat string) {
+func cmdExport(path, tableName string, objectID uint16, outputFormat string, escapeFormulas bool) {
 	db, err := engine.Open(path)
 	if err != nil {
 		fatal(err)
@@ -307,7 +311,7 @@ func cmdExport(path, tableName string, objectID uint16, outputFormat string) {
 
 	switch outputFormat {
 	case "csv":
-		exportCSV(ri)
+		exportCSV(ri, escapeFormulas)
 	case "json":
 		exportJSON(ri)
 	default:
@@ -316,23 +320,41 @@ func cmdExport(path, tableName string, objectID uint16, outputFormat string) {
 	}
 }
 
-func exportCSV(ri *engine.RowIterator) {
+func exportCSV(ri *engine.RowIterator, escapeFormulas bool) {
 	w := csv.NewWriter(os.Stdout)
 	defer w.Flush()
 
 	w.Write(ri.Columns())
 
 	for ri.Next() {
-		vals := ri.Values()
-		record := make([]string, len(vals))
-		for i, v := range vals {
-			if v == nil {
-				record[i] = ""
-			} else {
-				record[i] = fmt.Sprintf("%v", v)
-			}
+		w.Write(csvRecord(ri.Values(), escapeFormulas))
+	}
+}
+
+func csvRecord(vals []any, escapeFormulas bool) []string {
+	record := make([]string, len(vals))
+	for i, v := range vals {
+		if v == nil {
+			record[i] = ""
+		} else {
+			record[i] = fmt.Sprintf("%v", v)
 		}
-		w.Write(record)
+		if escapeFormulas {
+			record[i] = escapeCSVFormula(record[i])
+		}
+	}
+	return record
+}
+
+func escapeCSVFormula(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		return "'" + s
+	default:
+		return s
 	}
 }
 

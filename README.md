@@ -105,6 +105,9 @@ sdfutil dump database.sdf TableName 1305
 sdfutil export database.sdf TableName 1305 --format csv
 sdfutil export database.sdf TableName 1305 --format json
 
+# Prefix CSV cells that begin with =, +, -, or @ for safer spreadsheet import
+sdfutil export database.sdf TableName 1305 --format csv --escape-formulas
+
 # Export all tables to a SQLite database
 sdfutil export --format sqlite database.sdf output.db
 ```

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,5 +67,49 @@ func TestPrepareSQLiteOutputRejectsMissingParent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "check SQLite output directory") {
 		t.Fatalf("expected parent directory error, got %q", err)
+	}
+}
+
+func TestCSVRecordLeavesFormulaCellsRawByDefault(t *testing.T) {
+	got := csvRecord([]any{"=SUM(A1:A2)", "+cmd", "-10", "@name", "safe", nil}, false)
+	want := []string{"=SUM(A1:A2)", "+cmd", "-10", "@name", "safe", ""}
+
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("record[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCSVRecordEscapesFormulaCellsWhenEnabled(t *testing.T) {
+	got := csvRecord([]any{"=SUM(A1:A2)", "+cmd", "-10", "@name", "safe", nil}, true)
+	want := []string{"'=SUM(A1:A2)", "'+cmd", "'-10", "'@name", "safe", ""}
+
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("record[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCSVFormulaEscapingRoundTrip(t *testing.T) {
+	var out strings.Builder
+	w := csv.NewWriter(&out)
+	if err := w.Write(csvRecord([]any{"=1+1", "safe"}, true)); err != nil {
+		t.Fatal(err)
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := out.String(), "'=1+1,safe\n"; got != want {
+		t.Fatalf("CSV output = %q, want %q", got, want)
 	}
 }
